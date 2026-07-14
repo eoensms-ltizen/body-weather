@@ -25,10 +25,11 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   const plausibleDomain = process.env.NEXT_PUBLIC_PLAUSIBLE_DOMAIN;
-  const plausibleScript = process.env.NEXT_PUBLIC_PLAUSIBLE_SCRIPT_URL || "https://plausible.io/js/script.js";
+  const plausibleScript = process.env.NEXT_PUBLIC_PLAUSIBLE_SCRIPT_URL || (plausibleDomain ? "https://plausible.io/js/script.js" : "");
+  const plausibleInit = "window.plausible=window.plausible||function(){(plausible.q=plausible.q||[]).push(arguments)},plausible.init=plausible.init||function(i){plausible.o=i||{}};plausible.init()";
   return (
     <html lang="ko">
-      {plausibleDomain && <head><script defer data-domain={plausibleDomain} src={plausibleScript} /></head>}
+      {plausibleScript && <head><script async data-domain={plausibleDomain || undefined} src={plausibleScript} /><script dangerouslySetInnerHTML={{ __html: plausibleInit }} /></head>}
       <body>{children}</body>
     </html>
   );

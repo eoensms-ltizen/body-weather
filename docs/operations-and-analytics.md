@@ -10,7 +10,17 @@
 
 참고: https://plausible.io/docs/custom-event-goals, https://plausible.io/docs/compliance, https://developers.cloudflare.com/web-analytics/faq/, https://docs.umami.is/docs/event-data
 
-Plausible 계정과 사이트 도메인이 연결되기 전에는 Analytics가 완전히 비활성화된다. 활성화할 때 `NEXT_PUBLIC_PLAUSIBLE_DOMAIN`만 배포 환경에 설정한다.
+Plausible 계정과 사이트별 스크립트가 연결되기 전에는 Analytics가 완전히 비활성화된다. 활성화할 때 Plausible의 **Site Settings → General → Site Installation**에서 `https://plausible.io/js/pa-XXXXX.js` 형태의 사이트별 URL을 복사해 배포 환경의 `NEXT_PUBLIC_PLAUSIBLE_SCRIPT_URL`에 설정한다. 2025년 10월 이전의 범용 `script.js` 방식은 호환용으로만 남기며, 새 연동에서는 `NEXT_PUBLIC_PLAUSIBLE_DOMAIN`이 필요 없다.
+
+### 소유자가 해야 할 일
+
+1. Plausible Cloud의 30일 무료 체험 계정을 만들고 실제 배포 도메인을 Site로 추가한다.
+2. Site Installation에서 사이트별 `pa-XXXXX.js` URL을 복사한다. 전체 `<script>` 태그나 계정 비밀번호/API 키는 공유하지 않는다.
+3. 배포 환경에 `NEXT_PUBLIC_PLAUSIBLE_SCRIPT_URL`을 설정하고 재배포한다.
+4. Plausible의 설치 검증 도구로 페이지뷰 요청을 확인한다.
+5. 아래 6개 Custom Event를 Goal로 추가하고, 실제 ZIP 한 번으로 Import Started → Completed → Atlas Ready → Poster Exported 흐름을 확인한다.
+
+Starter에서도 페이지뷰와 기본 Custom Event Goal은 사용할 수 있다. 이벤트 속성별 분석과 Funnel이 필요해질 때 Business를 검토한다. Custom Event도 월 사용량에 포함되므로 초기에는 아래 allowlist 이외의 이벤트를 늘리지 않는다.
 
 ## 전송 허용 이벤트
 

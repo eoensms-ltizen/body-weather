@@ -4,7 +4,7 @@ import { boundsIntersect, buildAtlasModel, detectPrivacyZones, maskRoute, routeB
 import { classifyActivity } from "../lib/activity-classification";
 import { buildForecast } from "../lib/forecast";
 import { buildMemories } from "../lib/memories";
-import { filterPosterRoutes, posterDimensions } from "../lib/poster";
+import { createPosterProjection, filterPosterRoutes, posterDimensions } from "../lib/poster";
 import { countBucket, durationBucket, sizeBucket } from "../lib/telemetry";
 import { metric, missingMetric, type Activity, type DailyWellness, type ImportSummary, type RoutePoint } from "../lib/types";
 import { buildVerificationSummary } from "../lib/verification-fixture";
@@ -149,6 +149,20 @@ test("poster dimensions expose 4K landscape and long-edge vertical outputs", () 
   assert.deepEqual(posterDimensions("16:9"), [3840, 2160]);
   assert.deepEqual(posterDimensions("4:5"), [2160, 2700]);
   assert.deepEqual(posterDimensions("9:16"), [2160, 3840]);
+});
+
+test("poster projection keeps one geographic aspect ratio across output shapes", () => {
+  const bounds = { west: 126.7, south: 35.1, east: 129.4, north: 38.2 };
+  const landscape = createPosterProjection(bounds, { left: 0, top: 0, right: 1600, bottom: 900 });
+  const portrait = createPosterProjection(bounds, { left: 0, top: 0, right: 900, bottom: 1600 });
+  const landscapeAspect = landscape.contentWidth / landscape.contentHeight;
+  const portraitAspect = portrait.contentWidth / portrait.contentHeight;
+  assert.ok(Math.abs(landscapeAspect - portraitAspect) < 1e-9);
+  [[bounds.west, bounds.south], [bounds.east, bounds.north]].forEach(([longitude, latitude]) => {
+    const [x, y] = portrait.project({ longitude, latitude });
+    assert.ok(x >= 0 && x <= 900);
+    assert.ok(y >= 0 && y <= 1600);
+  });
 });
 
 test("poster routes always exclude hidden activities", () => {

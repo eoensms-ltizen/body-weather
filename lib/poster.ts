@@ -1,4 +1,5 @@
 import { mergeBounds, routesInBounds } from "./atlas";
+import { renderPosterBasemap } from "./poster-map";
 import type { AtlasRouteFeature, RouteBounds, RoutePoint } from "./types";
 
 export type PosterTheme = "night" | "aurora" | "paper";
@@ -12,6 +13,7 @@ export interface PosterConfig {
   ratio: PosterRatio;
   colorMode: PosterColorMode;
   showStats: boolean;
+  showBaseMap: boolean;
   privacyMasked: boolean;
   activityCount: number;
   distanceLabel: string;
@@ -26,6 +28,21 @@ export interface PosterRenderResult {
   height: number;
   includedRoutes: number;
   privacyMasked: boolean;
+  baseMapRendered: boolean;
+}
+
+export interface PosterMapFrame {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
+export interface PosterProjection {
+  project: (point: Pick<RoutePoint, "latitude" | "longitude">) => [number, number];
+  viewportBounds: RouteBounds;
+  contentWidth: number;
+  contentHeight: number;
 }
 
 const THEME = {
@@ -73,6 +90,52 @@ function canvasBlob(canvas: HTMLCanvasElement): Promise<Blob> {
   return new Promise((resolve, reject) => canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("POSTER_BLOB_FAILED")), "image/png"));
 }
 
+const MAX_MERCATOR_LATITUDE = 85.05112878;
+
+function mercatorY(latitude: number): number {
+  const clamped = Math.max(-MAX_MERCATOR_LATITUDE, Math.min(MAX_MERCATOR_LATITUDE, latitude));
+  const radians = clamped * Math.PI / 180;
+  return Math.log(Math.tan(Math.PI / 4 + radians / 2)) * 180 / Math.PI;
+}
+
+function inverseMercatorY(value: number): number {
+  return Math.atan(Math.sinh(value * Math.PI / 180)) * 180 / Math.PI;
+}
+
+export function createPosterProjection(bounds: RouteBounds, frame: PosterMapFrame, paddingRatio = 0.055): PosterProjection {
+  const frameWidth = Math.max(1, frame.right - frame.left);
+  const frameHeight = Math.max(1, frame.bottom - frame.top);
+  const padding = Math.max(0, Math.min(0.3, paddingRatio));
+  const innerWidth = frameWidth * (1 - padding * 2);
+  const innerHeight = frameHeight * (1 - padding * 2);
+  const west = bounds.west;
+  const east = bounds.east;
+  const southY = mercatorY(bounds.south);
+  const northY = mercatorY(bounds.north);
+  const xSpan = Math.max(0.0001, east - west);
+  const ySpan = Math.max(0.0001, northY - southY);
+  const scale = Math.min(innerWidth / xSpan, innerHeight / ySpan);
+  const centerLongitude = (west + east) / 2;
+  const centerMercatorY = (southY + northY) / 2;
+  const centerX = (frame.left + frame.right) / 2;
+  const centerY = (frame.top + frame.bottom) / 2;
+
+  return {
+    project: (point) => [
+      centerX + (point.longitude - centerLongitude) * scale,
+      centerY - (mercatorY(point.latitude) - centerMercatorY) * scale,
+    ],
+    viewportBounds: {
+      west: centerLongitude - frameWidth / (scale * 2),
+      east: centerLongitude + frameWidth / (scale * 2),
+      south: inverseMercatorY(centerMercatorY - frameHeight / (scale * 2)),
+      north: inverseMercatorY(centerMercatorY + frameHeight / (scale * 2)),
+    },
+    contentWidth: xSpan * scale,
+    contentHeight: ySpan * scale,
+  };
+}
+
 export function posterDimensions(ratio: PosterRatio, preview = false): [number, number] {
   return dimensions(ratio, preview);
 }
@@ -113,22 +176,29 @@ export async function renderPoster(
 
   const includedRoutes = config.cropBounds ? routesInBounds(routes, config.cropBounds) : routes;
   const bounds = config.cropBounds ?? mergeBounds(includedRoutes.map((route) => route.bounds));
+  let baseMapRendered = false;
   if (bounds) {
     const mapTop = height * 0.16;
     const mapBottom = height * 0.78;
     const mapLeft = width * 0.08;
     const mapRight = width * 0.92;
-    const lonSpan = Math.max(0.0001, bounds.east - bounds.west);
-    const latSpan = Math.max(0.0001, bounds.north - bounds.south);
-    const project = (point: RoutePoint): [number, number] => [
-      mapLeft + (point.longitude - bounds.west) / lonSpan * (mapRight - mapLeft),
-      mapBottom - (point.latitude - bounds.south) / latSpan * (mapBottom - mapTop),
-    ];
+    const frame = { left: mapLeft, top: mapTop, right: mapRight, bottom: mapBottom };
+    const projection = createPosterProjection(bounds, frame);
+    const project = projection.project;
     const achievementIds = new Set(achievementActivityIds);
     context.save();
     context.beginPath();
     context.rect(mapLeft, mapTop, mapRight - mapLeft, mapBottom - mapTop);
     context.clip();
+    if (config.showBaseMap) {
+      const baseMap = await renderPosterBasemap(projection.viewportBounds, mapRight - mapLeft, mapBottom - mapTop);
+      if (baseMap) {
+        context.drawImage(baseMap, mapLeft, mapTop, mapRight - mapLeft, mapBottom - mapTop);
+        context.fillStyle = config.theme === "paper" ? "rgba(239, 233, 220, .2)" : "rgba(2, 12, 17, .4)";
+        context.fillRect(mapLeft, mapTop, mapRight - mapLeft, mapBottom - mapTop);
+        baseMapRendered = true;
+      }
+    }
     includedRoutes.forEach((route) => {
       const points = config.preview ? route.lod.low : route.lod.medium;
       if (points.length < 2) return;
@@ -147,6 +217,15 @@ export async function renderPoster(
       context.stroke();
     });
     context.restore();
+    if (baseMapRendered) {
+      context.save();
+      context.fillStyle = palette.muted;
+      context.globalAlpha = 0.76;
+      context.textAlign = "right";
+      context.font = `500 ${Math.max(8, Math.round(width * 0.0045))}px "Arial", "Malgun Gothic", sans-serif`;
+      context.fillText("Map data © OpenStreetMap contributors · OpenFreeMap", mapRight, mapBottom + Math.max(11, height * 0.012));
+      context.restore();
+    }
   }
   context.globalAlpha = 1;
   context.shadowBlur = 0;
@@ -173,5 +252,5 @@ export async function renderPoster(
   }
 
   const blob = await canvasBlob(canvas);
-  return { blob, width, height, includedRoutes: includedRoutes.length, privacyMasked: true };
+  return { blob, width, height, includedRoutes: includedRoutes.length, privacyMasked: true, baseMapRendered };
 }

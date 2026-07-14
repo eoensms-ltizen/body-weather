@@ -243,6 +243,8 @@ button, summary { -webkit-tap-highlight-color: transparent; }
 .control-group > div { display: flex; gap: 6px; }
 .control-group button { flex: 1; padding: 9px; border: 1px solid var(--line); border-radius: 9px; background: transparent; color: #91a5a1; font-size: 9px; cursor: pointer; text-transform: capitalize; }
 .control-group button.active { border-color: var(--mint); color: var(--mint); background: rgba(104,236,210,.07); }
+.poster-map-control { padding: 12px; border: 1px solid rgba(104,236,210,.13); border-radius: 12px; background: rgba(104,236,210,.025); }
+.poster-map-control small { display: block; margin-top: 8px; color: #647974; font-size: 7px; line-height: 1.45; }
 .poster-size { margin: 20px 0 0; color: #647a75; font-size: 9px; }
 .poster-export-status { margin: 12px 0 0; color: var(--mint); font-size: 9px; line-height: 1.5; }
 

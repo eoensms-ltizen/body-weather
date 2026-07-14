@@ -24,7 +24,7 @@ const EVENT_NAMES: Record<TelemetryEvent, string> = {
 };
 
 export function telemetryEnabled(): boolean {
-  return Boolean(process.env.NEXT_PUBLIC_PLAUSIBLE_DOMAIN);
+  return Boolean(process.env.NEXT_PUBLIC_PLAUSIBLE_SCRIPT_URL || process.env.NEXT_PUBLIC_PLAUSIBLE_DOMAIN);
 }
 
 export function sizeBucket(bytes: number): string {
