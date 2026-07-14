@@ -164,6 +164,39 @@ export async function renderPoster(
   context.fillStyle = gradient;
   context.fillRect(0, 0, width, height);
 
+  if (config.theme === "aurora") {
+    context.save();
+    context.globalCompositeOperation = "screen";
+    const blooms = [
+      { x: width * .2, y: height * .28, radius: width * .42, color: "84, 231, 167" },
+      { x: width * .76, y: height * .18, radius: width * .38, color: "149, 124, 255" },
+      { x: width * .64, y: height * .78, radius: width * .34, color: "255, 138, 114" },
+    ];
+    blooms.forEach((bloom) => {
+      const aura = context.createRadialGradient(bloom.x, bloom.y, 0, bloom.x, bloom.y, bloom.radius);
+      aura.addColorStop(0, `rgba(${bloom.color}, .16)`);
+      aura.addColorStop(.42, `rgba(${bloom.color}, .07)`);
+      aura.addColorStop(1, `rgba(${bloom.color}, 0)`);
+      context.fillStyle = aura;
+      context.fillRect(0, 0, width, height);
+    });
+    const ribbon = context.createLinearGradient(0, height * .64, width, height * .3);
+    ribbon.addColorStop(0, "rgba(84, 231, 167, 0)");
+    ribbon.addColorStop(.28, "rgba(84, 231, 167, .14)");
+    ribbon.addColorStop(.58, "rgba(149, 124, 255, .13)");
+    ribbon.addColorStop(.82, "rgba(255, 138, 114, .08)");
+    ribbon.addColorStop(1, "rgba(255, 138, 114, 0)");
+    context.beginPath();
+    context.moveTo(-width * .1, height * .72);
+    context.bezierCurveTo(width * .24, height * .45, width * .58, height * .6, width * 1.1, height * .24);
+    context.strokeStyle = ribbon;
+    context.lineWidth = width * .085;
+    context.shadowBlur = width * .055;
+    context.shadowColor = "rgba(104, 240, 208, .22)";
+    context.stroke();
+    context.restore();
+  }
+
   const grid = Math.max(32, Math.round(width / 28));
   context.strokeStyle = palette.grid;
   context.lineWidth = Math.max(1, width / 2400);

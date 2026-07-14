@@ -203,8 +203,8 @@ export default function AtlasMap({
       id: "atlas-route-halo",
       data: visibleRoutes,
       getPath: (route) => route.renderPath,
-      getColor: (route) => { const [r, g, b] = colors(route); return [r, g, b, route.id === selectedId ? 160 : 56]; },
-      getWidth: (route) => route.id === selectedId ? 14 : colorMode === "memory" ? 7 : 5,
+      getColor: (route) => { const [r, g, b] = colors(route); return [r, g, b, route.id === selectedId ? 185 : colorMode === "memory" ? 72 : 58]; },
+      getWidth: (route) => route.id === selectedId ? 16 : colorMode === "memory" ? 8.5 : 5.5,
       widthUnits: "pixels",
       capRounded: true,
       jointRounded: true,
@@ -216,7 +216,7 @@ export default function AtlasMap({
       data: visibleRoutes,
       getPath: (route) => route.renderPath,
       getColor: colors,
-      getWidth: (route) => route.id === selectedId ? 3.8 : 1.65,
+      getWidth: (route) => route.id === selectedId ? 4.2 : colorMode === "memory" ? 1.9 : 1.7,
       widthUnits: "pixels",
       widthMinPixels: 1,
       capRounded: true,
@@ -305,10 +305,11 @@ export default function AtlasMap({
       if (timestamp - previous > 34) {
         previous = timestamp;
         const head = Math.floor(timestamp / 42) % points.length;
-        const trail = Array.from({ length: 5 }, (_, index) => ({
+        const trail = Array.from({ length: 7 }, (_, index) => ({
           position: points[(head - index * 2 + points.length) % points.length],
           radius: Math.max(2.5, 7 - index),
           alpha: Math.max(35, 245 - index * 48),
+          index,
         }));
         overlay.setProps({ layers: [new ScatterplotLayer({
           id: "selected-trace-flow",
@@ -316,7 +317,7 @@ export default function AtlasMap({
           getPosition: (item) => item.position,
           getRadius: (item) => item.radius,
           radiusUnits: "pixels",
-          getFillColor: (item) => [245, 255, 251, item.alpha],
+          getFillColor: (item) => item.index % 3 === 1 ? [159, 132, 255, item.alpha] : item.index % 3 === 2 ? [92, 235, 174, item.alpha] : [245, 255, 251, item.alpha],
           stroked: true,
           getLineColor: [104, 236, 210, 230],
           lineWidthMinPixels: 1,
@@ -369,7 +370,7 @@ export default function AtlasMap({
     width: Math.abs(dragBox.x - dragBox.startX), height: Math.abs(dragBox.y - dragBox.startY),
   } : undefined;
 
-  return <div className="atlas-map-wrap">
+  return <div className={`atlas-map-wrap aurora-${colorMode}`}>
     <div ref={containerRef} className="atlas-map" aria-label="누적 운동 경로 지도" />
     {mapState === "loading" && <div className="map-status"><i />지도를 깨우는 중</div>}
     {mapState === "fallback" && <div className="map-fallback-note">베이스맵 연결 없이 경로만 안전하게 표시하고 있습니다.</div>}

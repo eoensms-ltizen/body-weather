@@ -119,12 +119,14 @@ function ImportScreen({ onImported }: { onImported: (summary: ImportSummary) => 
   };
 
   return <main className="import-shell">
+    <div className="import-aurora" aria-hidden="true"><i /><i /><i /></div>
     <section className="import-hero">
-      <div className="brand-mark">BW</div>
-      <p className="eyebrow">PRIVATE EXPERIENCE ATLAS</p>
+      <div className="brand-mark"><span>BW</span><i /></div>
+      <p className="eyebrow">AURORA BIO-WEATHER · PRIVATE ATLAS</p>
       <h1>당신의 몸에도<br /><em>날씨가 흐릅니다.</em></h1>
       <p className="hero-copy">지나온 모든 길과 회복의 리듬을 겹쳐, 나만의 움직임이 만든 지도를 펼쳐보세요.</p>
       <div className="privacy-note"><span>LOCAL FIRST</span> ZIP과 건강·경로 원본은 서버에 저장하거나 전송하지 않습니다.</div>
+      <div className="import-ritual" aria-label="가져오기 처리 과정"><span><i>01</i><b>READ</b></span><span><i>02</i><b>PROCESS</b></span><span><i>03</i><b>VISUALIZE</b></span></div>
     </section>
     <section className="import-card" aria-labelledby="import-title">
       <div><p className="step-label">01 / OPEN YOUR ATLAS</p><h2 id="import-title">내보내기 ZIP 가져오기</h2><p>Strava, Garmin 중 하나만 있어도 시작합니다. 사진과 영상은 제외하고 존재하는 필드만 사용합니다.</p></div>
@@ -257,13 +259,12 @@ function AtlasView({
   const threeMonthsBefore = new Date(`${summary.endDate}T12:00:00`); threeMonthsBefore.setMonth(threeMonthsBefore.getMonth() - 3);
   const lastYear = summary.endDate.slice(0, 4);
 
-  return <section className="atlas-view">
+  return <section className={`atlas-view mode-${interactionMode}`}>
     {atlasState === "building" ? <div className="atlas-processing" role="status" aria-live="polite"><div className="processing-orbit"><i /><i /><i /></div><span>ATLAS ENGINE · BUILDING</span><h2>경로를 지도 위에<br />펼치는 중입니다.</h2><p>{summary.activities.length.toLocaleString("ko-KR")}개 활동의 좌표 정리, 민감 위치 마스킹, 지도 최적화를 처리하고 있습니다.</p><small>이 단계가 끝난 뒤에만 GPS 경로 유무를 확정합니다.</small></div> : filteredAtlas.routes.length ? <Suspense fallback={<div className="route-empty"><span>ATLAS ENGINE</span><h2>지도 화면을 준비하는 중</h2></div>}><AtlasMap routes={shownRoutes} bounds={shownBounds} achievements={filteredAtlas.achievements} placeClusters={filteredAtlas.placeClusters} colorMode={colorMode} selectedId={selectedRoute?.id} focusCoordinate={focusCoordinate} onSelect={onRouteSelect} interactionMode={interactionMode} hiddenIds={hiddenIds} selectedAchievementId={selectedAchievement?.id} onAchievementSelect={onAchievementSelect} onAreaSelection={onAreaSelection} onViewportChange={onViewportChange} /></Suspense> : <div className="route-empty"><span>NO GPS TRACE · CONFIRMED</span><h2>경로 좌표 없이도<br />시간은 남아 있습니다.</h2><p>경로 처리를 완료했지만 지도에 그릴 좌표가 없었습니다. 활동 날짜와 거리, 회복 기록으로 Forecast와 Memories를 구성했습니다.</p></div>}
-    <div className="atlas-title"><p className="eyebrow">ALL-TIME EXPERIENCE MAP</p><h1>{summary.startDate.slice(0, 4)} — {summary.endDate.slice(0, 4)}</h1><p>{displayedActivities.length.toLocaleString("ko-KR")}개 활동 · {filteredAtlas.routeActivityCount.toLocaleString("ko-KR")}개 경로 · {filteredAtlas.placeClusters.length.toLocaleString("ko-KR")}개 지역 경험{hiddenIds.size ? ` · ${hiddenIds.size}개 숨김` : ""}</p></div>
+    <div className="atlas-title"><p className="eyebrow">AURORA EXPERIENCE FIELD</p><h1>{summary.startDate.slice(0, 4)} — {summary.endDate.slice(0, 4)}</h1><p>{displayedActivities.length.toLocaleString("ko-KR")}개 활동 · {filteredAtlas.routeActivityCount.toLocaleString("ko-KR")}개 경로 · {filteredAtlas.placeClusters.length.toLocaleString("ko-KR")}개 지역 경험{hiddenIds.size ? ` · ${hiddenIds.size}개 숨김` : ""}</p></div>
     <button type="button" className={`forecast-peek weather-${latestForecast.weatherState.replace(" ", "-")}`} onClick={onOpenForecast}>
-      <span>{latestForecast.displayMode === "today" ? "TODAY" : "LATEST"} · {latestForecast.asOfDate}</span>
-      <strong>{latestForecast.weatherState} <b>{latestForecast.score ?? "—"}</b></strong>
-      <small>{latestForecast.recommendationBand} · 신뢰도 {confidenceLabel(latestForecast.confidence)} ↗</small>
+      <span className="forecast-orb" aria-hidden="true"><b>{latestForecast.score ?? "—"}</b><i /></span>
+      <span className="forecast-peek-copy"><small>{latestForecast.displayMode === "today" ? "TODAY" : "LATEST"} · {latestForecast.asOfDate}</small><strong>{latestForecast.weatherState}</strong><em>{latestForecast.recommendationBand} · 신뢰도 {confidenceLabel(latestForecast.confidence)} ↗</em></span>
     </button>
     <aside className="atlas-layers" aria-label="지도 색상 모드">
       <p>LAYERS</p>
@@ -302,7 +303,7 @@ function ForecastView({ summary }: { summary: ImportSummary }) {
   const forecast = useMemo(() => buildForecast(summary, scenario), [summary, scenario]);
   const scenarioCopy = SCENARIOS.find((item) => item.key === scenario)?.copy;
   return <section className="forecast-view content-page">
-    <header className="content-header"><p className="eyebrow">BODY WEATHER FORECAST</p><h1>{forecast.displayMode === "today" ? "오늘의 몸은" : "마지막 관측의 몸은"}<br /><em>{forecast.weatherState}입니다.</em></h1><p>데이터 기준 {forecast.asOfDate} · {forecast.freshnessDays ? `${forecast.freshnessDays}일 전 관측` : "최신 관측"} · Tier {forecast.tier}</p></header>
+    <header className="content-header"><p className="eyebrow">AURORA BIO-WEATHER FORECAST</p><h1>{forecast.displayMode === "today" ? "오늘의 몸은" : "마지막 관측의 몸은"}<br /><em>{forecast.weatherState}입니다.</em></h1><p>데이터 기준 {forecast.asOfDate} · {forecast.freshnessDays ? `${forecast.freshnessDays}일 전 관측` : "최신 관측"} · Tier {forecast.tier}</p></header>
     <div className={`forecast-hero state-${forecast.weatherState.replace(" ", "-")}`}>
       <div className="weather-orb"><span>{forecast.weatherState}</span><strong>{forecast.score ?? "—"}</strong><small>100</small></div>
       <div className="forecast-verdict"><span>{forecast.displayMode === "today" ? "TODAY" : "RECENT OBSERVATION"}</span><h2>{forecast.recommendationBand}</h2><p>{forecast.reasons[0] ?? "현재 점수를 만들 수 있는 회복 신호가 충분하지 않습니다."}</p><div><b>신뢰도 {confidenceLabel(forecast.confidence)}</b><i />{forecast.factors.length}개 신호 사용</div></div>
@@ -316,7 +317,7 @@ function ForecastView({ summary }: { summary: ImportSummary }) {
 
 function PosterStudio({ summary, routes, achievementIds, selection, hiddenIds }: { summary: ImportSummary; routes: AtlasRouteFeature[]; achievementIds: string[]; selection: PosterSelection | null; hiddenIds: ReadonlySet<string> }) {
   const [title, setTitle] = useState("MY EXPERIENCE ATLAS");
-  const [theme, setTheme] = useState<PosterTheme>("night");
+  const [theme, setTheme] = useState<PosterTheme>("aurora");
   const [ratio, setRatio] = useState<PosterRatio>("16:9");
   const [colorMode, setColorMode] = useState<PosterColorMode>("memory");
   const [showBaseMap, setShowBaseMap] = useState(false);
@@ -372,7 +373,7 @@ function PosterStudio({ summary, routes, achievementIds, selection, hiddenIds }:
 function MemoriesView({ summary, atlas, posterSelection, hiddenIds, onOpenMemory }: { summary: ImportSummary; atlas: AtlasModel; posterSelection: PosterSelection | null; hiddenIds: ReadonlySet<string>; onOpenMemory: (memory: MemoryCard) => void }) {
   const collection = useMemo(() => buildMemories(summary, atlas), [summary, atlas]);
   return <section className="memories-view content-page">
-    <header className="content-header"><p className="eyebrow">MEMORIES · ALL TIME</p><h1>길은 사라져도<br /><em>경험은 지도가 됩니다.</em></h1><p>{summary.startDate} — {summary.endDate} · {collection.years.length}개의 해</p></header>
+    <header className="content-header"><p className="eyebrow">MEMORIES · LIVING ATLAS</p><h1>길은 사라져도<br /><em>경험은 지도가 됩니다.</em></h1><p>{summary.startDate} — {summary.endDate} · {collection.years.length}개의 해</p></header>
     <div className="season-summary"><div><span>총 거리</span><strong>{collection.totalDistance === null ? "측정 없음" : `${collection.totalDistance.toLocaleString("ko-KR", { maximumFractionDigits: 0 })} km`}</strong></div><div><span>총 획득 고도</span><strong>{collection.totalElevationGain === null ? "측정 없음" : `${collection.totalElevationGain.toLocaleString("ko-KR", { maximumFractionDigits: 0 })} m`}</strong><small>{collection.elevationActivityCount ? `${collection.elevationActivityCount.toLocaleString("ko-KR")}개 활동 측정값` : "원본 필드 없음"}</small></div><div><span>움직인 시간</span><strong>{collection.totalHours === null ? "측정 없음" : `${collection.totalHours.toLocaleString("ko-KR", { maximumFractionDigits: 0 })} h`}</strong></div><div><span>활동 일수</span><strong>{collection.activityDays.toLocaleString("ko-KR")} days</strong></div><div><span>경로 지역</span><strong>{atlas.placeClusters.length.toLocaleString("ko-KR")} places</strong></div></div>
     <div className="memory-grid">{collection.cards.map((memory, index) => <button key={memory.id} type="button" className={`memory-card kind-${memory.kind}`} onClick={() => onOpenMemory(memory)}><span>{memory.eyebrow}</span><b>{String(index + 1).padStart(2, "0")}</b><h2>{memory.title}</h2><p>{memory.description}</p><small>{memory.evidence} ↗</small></button>)}</div>
     <PosterStudio summary={summary} routes={atlas.routes} achievementIds={atlas.achievements.map((item) => item.activityId)} selection={posterSelection} hiddenIds={hiddenIds} />
@@ -541,7 +542,7 @@ export default function BodyWeatherApp() {
 
   return <main className="app-shell">
     <header className="app-header">
-      <button className="brand-button" type="button" onClick={() => setView("atlas")}><span>BW</span><strong>BODY WEATHER<small>EXPERIENCE ATLAS</small></strong></button>
+      <button className="brand-button" type="button" onClick={() => setView("atlas")}><span>BW</span><strong>BODY WEATHER<small>LOCAL · PRIVATE</small></strong></button>
       <nav aria-label="주요 화면"><button aria-current={view === "atlas" ? "page" : undefined} className={view === "atlas" ? "active" : ""} onClick={() => setView("atlas")}>Atlas</button><button aria-current={view === "forecast" ? "page" : undefined} className={view === "forecast" ? "active" : ""} onClick={() => setView("forecast")}>Forecast</button><button aria-current={view === "memories" ? "page" : undefined} className={view === "memories" ? "active" : ""} onClick={() => setView("memories")}>Memories</button><button aria-current={view === "data" ? "page" : undefined} className={view === "data" ? "active" : ""} onClick={() => setView("data")}>Data & Privacy</button></nav>
       <button className="reset-button" type="button" onClick={() => { setSummary(null); setFullAtlas(buildAtlasModel([], true)); setAtlasState("idle"); setSelectedRoute(null); setSelectedAchievement(null); setFocusCoordinate(null); setHiddenIds(new Set()); setPosterSelection(null); }}>새 ZIP</button>
     </header>
