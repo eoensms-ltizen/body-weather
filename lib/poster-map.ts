@@ -1,6 +1,6 @@
 import type { RouteBounds } from "./types";
 
-const MAP_STYLE_URL = process.env.NEXT_PUBLIC_MAP_STYLE_URL || "https://tiles.openfreemap.org/styles/fiord";
+const MAP_STYLE_URL = process.env.NEXT_PUBLIC_MAP_STYLE_URL || "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
 const MAX_RENDER_EDGE = 3072;
 const CACHE_LIMIT = 4;
 const cache = new Map<string, Promise<HTMLCanvasElement | null>>();

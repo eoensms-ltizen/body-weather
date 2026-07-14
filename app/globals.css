@@ -109,9 +109,10 @@ button, summary { -webkit-tap-highlight-color: transparent; }
 .map-selection-surface.mode-hide { cursor: cell; }
 .map-selection-box { position: absolute; display: block; border: 1px solid var(--mint); background: rgba(104,236,210,.13); box-shadow: 0 0 0 1px rgba(2,13,17,.5), 0 0 32px rgba(104,236,210,.15); }
 .map-selection-surface.mode-hide .map-selection-box { border-color: var(--coral); background: rgba(255,118,95,.12); box-shadow: 0 0 28px rgba(255,118,95,.14); }
-.map-status, .map-fallback-note { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); padding: 11px 15px; border: 1px solid var(--line); border-radius: 999px; background: rgba(5,18,24,.82); color: #a9b9b5; font-size: 11px; }
+.map-status, .map-fallback-note, .map-provider-note { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); padding: 11px 15px; border: 1px solid var(--line); border-radius: 999px; background: rgba(5,18,24,.82); color: #a9b9b5; font-size: 11px; }
 .map-status i { display: inline-block; width: 7px; height: 7px; margin-right: 8px; border-radius: 50%; background: var(--mint); animation: breathe 1.4s ease-in-out infinite; }
-.map-fallback-note { top: auto; bottom: 108px; }
+.map-fallback-note, .map-provider-note { top: auto; bottom: 108px; }
+.map-provider-note { color: #8caaa5; opacity: .8; }
 .maplibregl-ctrl-bottom-right { bottom: 88px !important; right: 10px !important; }
 .maplibregl-ctrl-group { background: rgba(5,18,24,.78) !important; border: 1px solid var(--line); box-shadow: none !important; backdrop-filter: blur(10px); }
 .maplibregl-ctrl-group button span { filter: invert(1); opacity: .7; }
@@ -335,7 +336,7 @@ button, summary { -webkit-tap-highlight-color: transparent; }
 
 .atlas-view { background: #020a12; }
 .atlas-map { background: radial-gradient(circle at 58% 42%, #0a2330, #020a12 70%); }
-.atlas-map canvas { filter: saturate(.78) brightness(.68) contrast(1.13) hue-rotate(7deg); }
+.atlas-map canvas { filter: saturate(.86) brightness(.96) contrast(1.06); }
 .map-atmosphere { overflow: hidden; background: radial-gradient(circle at 54% 43%, transparent 20%, rgba(2,10,18,.12) 62%, rgba(1,6,12,.8) 100%); }
 .map-atmosphere::before, .map-atmosphere::after { content: ""; position: absolute; pointer-events: none; mix-blend-mode: screen; }
 .map-atmosphere::before { width: 68%; height: 22%; left: 15%; top: 18%; border-radius: 50%; background: linear-gradient(90deg, transparent 0%, rgba(84,231,167,.3) 28%, rgba(112,244,213,.14) 52%, rgba(149,124,255,.26) 75%, transparent 100%); filter: blur(72px); transform: rotate(-13deg); opacity: .48; animation: aurora-map 18s ease-in-out infinite alternate; }

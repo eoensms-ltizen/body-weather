@@ -19,6 +19,9 @@ const FALLBACK_STYLE: StyleSpecification = {
   layers: [{ id: "background", type: "background", paint: { "background-color": "#06151c" } }],
 };
 
+const CARTO_DARK_STYLE_URL = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
+const OPEN_FREE_MAP_STYLE_URL = "https://tiles.openfreemap.org/styles/fiord";
+
 const SPORT_COLORS: Record<string, [number, number, number, number]> = {
   run: [255, 104, 140, 230],
   ride: [88, 235, 210, 230],
@@ -111,7 +114,7 @@ export default function AtlasMap({
   const onViewportChangeRef = useRef(onViewportChange);
   const routesRef = useRef(routes);
   const [zoom, setZoom] = useState(5);
-  const [mapState, setMapState] = useState<"loading" | "ready" | "fallback">("loading");
+  const [mapState, setMapState] = useState<"loading" | "ready" | "backup" | "fallback">("loading");
   const [dragBox, setDragBox] = useState<{ startX: number; startY: number; x: number; y: number } | null>(null);
   const achievementIds = useMemo(() => new Set(achievements.map((item) => item.activityId)), [achievements]);
 
@@ -125,10 +128,11 @@ export default function AtlasMap({
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
-    const style = process.env.NEXT_PUBLIC_MAP_STYLE_URL || "https://tiles.openfreemap.org/styles/fiord";
+    const configuredStyle = process.env.NEXT_PUBLIC_MAP_STYLE_URL?.trim();
+    const styleCandidates = Array.from(new Set([configuredStyle, CARTO_DARK_STYLE_URL, OPEN_FREE_MAP_STYLE_URL].filter((item): item is string => Boolean(item))));
     const map = new maplibregl.Map({
       container: containerRef.current,
-      style,
+      style: styleCandidates[0],
       center: [127.3, 36.3],
       zoom: 5.5,
       minZoom: 1.5,
@@ -138,15 +142,59 @@ export default function AtlasMap({
       attributionControl: false,
     });
     map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), "bottom-right");
-    map.addControl(new maplibregl.AttributionControl({ compact: true, customAttribution: "Map data © OpenStreetMap contributors" }), "bottom-right");
+    map.addControl(new maplibregl.AttributionControl({ compact: true, customAttribution: "Map data © OpenStreetMap contributors · CARTO / OpenFreeMap" }), "bottom-right");
     const overlay = new MapboxOverlay({ interleaved: false, layers: [] });
     const flowOverlay = new MapboxOverlay({ interleaved: false, layers: [] });
     map.addControl(overlay as unknown as maplibregl.IControl);
     map.addControl(flowOverlay as unknown as maplibregl.IControl);
-    let recovered = false;
-    map.on("load", () => {
-      setMapState(recovered ? "fallback" : "ready");
+    let styleIndex = 0;
+    let styleParsed = false;
+    let renderReady = false;
+    let styleErrors = 0;
+    let switchingStyle = false;
+    let loadTimer = 0;
+    const activateLocalFallback = () => {
+      switchingStyle = true;
+      window.clearTimeout(loadTimer);
+      map.setStyle(FALLBACK_STYLE);
+      setMapState("fallback");
       fitMap(map, initialBoundsRef.current, false);
+    };
+    const switchToNextStyle = () => {
+      window.clearTimeout(loadTimer);
+      if (styleIndex + 1 >= styleCandidates.length) {
+        activateLocalFallback();
+        return;
+      }
+      switchingStyle = true;
+      styleParsed = false;
+      renderReady = false;
+      styleErrors = 0;
+      styleIndex += 1;
+      setMapState("loading");
+      map.setStyle(styleCandidates[styleIndex]);
+      window.setTimeout(() => { switchingStyle = false; }, 250);
+      armLoadTimer();
+    };
+    const armLoadTimer = () => {
+      window.clearTimeout(loadTimer);
+      loadTimer = window.setTimeout(() => {
+        if (renderReady) return;
+        switchToNextStyle();
+      }, 12_000);
+    };
+    map.on("style.load", () => {
+      if (map.getStyle().name === FALLBACK_STYLE.name) return;
+      styleParsed = true;
+      styleErrors = 0;
+      switchingStyle = false;
+      fitMap(map, initialBoundsRef.current, false);
+    });
+    map.on("idle", () => {
+      if (map.getStyle().name === FALLBACK_STYLE.name || renderReady) return;
+      renderReady = true;
+      window.clearTimeout(loadTimer);
+      setMapState(styleIndex === 0 ? "ready" : "backup");
     });
     map.on("zoom", () => setZoom(map.getZoom()));
     map.on("moveend", () => {
@@ -154,20 +202,14 @@ export default function AtlasMap({
       onViewportChangeRef.current({ west: current.getWest(), south: current.getSouth(), east: current.getEast(), north: current.getNorth() });
     });
     map.on("error", (event) => {
-      if (recovered || map.loaded()) return;
+      if (renderReady || switchingStyle) return;
       const message = String(event.error?.message ?? "");
-      if (!/style|source|fetch|network|load/i.test(message)) return;
-      recovered = true;
-      map.setStyle(FALLBACK_STYLE);
-      setMapState("fallback");
+      if (!/style|stylesheet|fetch|network|json|load/i.test(message)) return;
+      styleErrors += 1;
+      if (styleParsed && styleErrors < 4) return;
+      switchToNextStyle();
     });
-    const loadTimer = window.setTimeout(() => {
-      if (recovered || map.loaded()) return;
-      recovered = true;
-      map.setStyle(FALLBACK_STYLE);
-      setMapState("fallback");
-      fitMap(map, initialBoundsRef.current, false);
-    }, 8_000);
+    armLoadTimer();
     mapRef.current = map;
     overlayRef.current = overlay;
     flowOverlayRef.current = flowOverlay;
@@ -373,7 +415,8 @@ export default function AtlasMap({
   return <div className={`atlas-map-wrap aurora-${colorMode}`}>
     <div ref={containerRef} className="atlas-map" aria-label="누적 운동 경로 지도" />
     {mapState === "loading" && <div className="map-status"><i />지도를 깨우는 중</div>}
-    {mapState === "fallback" && <div className="map-fallback-note">베이스맵 연결 없이 경로만 안전하게 표시하고 있습니다.</div>}
+    {mapState === "backup" && <div className="map-provider-note">보조 지도에 연결했습니다.</div>}
+    {mapState === "fallback" && <div className="map-fallback-note">지도 공급자 연결이 모두 지연되어 경로만 표시하고 있습니다. 네트워크가 회복되면 새로고침해 주세요.</div>}
     <div className="map-atmosphere" aria-hidden="true" />
     {interactionMode !== "navigate" && <div className={`map-selection-surface mode-${interactionMode}`} data-testid="map-selection-surface" aria-label={interactionMode === "poster" ? "포스터 영역 드래그 선택" : "숨길 활동 영역 드래그 선택"} onPointerDown={startSelection} onPointerMove={moveSelection} onPointerUp={endSelection} onPointerCancel={() => setDragBox(null)}>{dragBox && <i className="map-selection-box" style={boxStyle} />}</div>}
   </div>;
