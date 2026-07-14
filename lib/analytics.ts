@@ -55,6 +55,14 @@ export function buildCapabilityProfile(
     capability("stress", "스트레스 분석", wellness.filter((d) => hasMetric(d.averageStress)).length, wellnessTotal),
     capability("recovery", "운동 전후 회복", wellness.filter((d) => hasMetric(d.hrv) || hasMetric(d.bodyBatteryHigh) || hasMetric(d.sleep?.score)).length, wellnessTotal),
     capability("correlation", "상관관계 분석", wellness.filter((d) => hasMetric(d.sleep?.totalSeconds) || hasMetric(d.hrv)).length, wellnessTotal, 0.3),
+    capability("atlas_base", "Experience Atlas", activityTotal, activityTotal || 1),
+    capability("atlas_routes", "누적 경로 지도", activities.filter((a) => (a.route?.length ?? 0) > 1).length, activityTotal, 0.2),
+    capability("atlas_places", "지역 경험", activities.filter((a) => (a.route?.length ?? 0) > 1).length, activityTotal, 0.15),
+    capability("source_achievements", "원본 성과", activities.filter((a) => hasMetric(a.achievementCount)).length, activityTotal, 0.1),
+    capability("personal_records", "개인 기록", activities.filter((a) => hasMetric(a.distance) || hasMetric(a.movingTime)).length, activityTotal, 0.25),
+    capability("forecast_full", "Body Weather Forecast", wellness.filter((d) => [d.sleep?.score, d.hrv, d.bodyBatteryHigh, d.averageStress].filter(hasMetric).length >= 3).length, wellnessTotal, 0.2),
+    capability("forecast_activity", "활동 기반 Forecast", activities.filter((a) => hasMetric(a.trainingLoad) || hasMetric(a.relativeEffort) || hasMetric(a.movingTime)).length, activityTotal, 0.25),
+    capability("poster_export", "Atlas Poster", activities.filter((a) => (a.route?.length ?? 0) > 1).length, activityTotal, 0.05),
   ];
   return {
     capabilities: caps,

@@ -6,8 +6,8 @@ import { attachRoutes, parseStravaActivities } from "./strava";
 import type { Activity, DataQualityIssue, ImportSummary } from "./types";
 
 export interface ImportOptions {
-  startDate: string;
-  endDate: string;
+  startDate?: string;
+  endDate?: string;
   onProgress?: (stage: string, progress: number) => void;
 }
 
@@ -120,10 +120,11 @@ export async function importHealthArchives(
   const capabilityProfile = buildCapabilityProfile(activities, uniqueWellness);
   options.onProgress?.("완료", 1);
 
+  const availableDates = [...activities.map((activity) => activity.localDate), ...uniqueWellness.map((day) => day.date)].sort();
   return {
     importedAt: new Date().toISOString(),
-    startDate: options.startDate,
-    endDate: options.endDate,
+    startDate: options.startDate ?? availableDates[0] ?? "",
+    endDate: options.endDate ?? availableDates.at(-1) ?? "",
     activities,
     wellness: uniqueWellness,
     sourceFiles,

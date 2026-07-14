@@ -90,8 +90,8 @@ function bodyBatteryStat(value: unknown, type: string): unknown {
 
 export async function parseGarminWellness(
   allEntries: Entry[],
-  startDate: string,
-  endDate: string,
+  startDate?: string,
+  endDate?: string,
 ): Promise<{ wellness: DailyWellness[]; issues: DataQualityIssue[] }> {
   const days = new Map<string, DailyWellness>();
   const issues: DataQualityIssue[] = [];
@@ -105,7 +105,7 @@ export async function parseGarminWellness(
       const parsed = JSON.parse(await entry.getData(new TextWriter()));
       for (const record of list(parsed)) {
         const date = String(record.calendarDate ?? "");
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date < startDate || date > endDate) continue;
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || (startDate && date < startDate) || (endDate && date > endDate)) continue;
         const day = dayFor(days, date);
         if (/sleepdata/i.test(entry.filename)) {
           day.sleep = parseSleep(record, entry.filename) ?? undefined;

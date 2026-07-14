@@ -7,15 +7,15 @@ export async function generateMetadata(): Promise<Metadata> {
   const host = requestHeaders.get("x-forwarded-host") ?? requestHeaders.get("host") ?? "localhost:3000";
   const protocol = requestHeaders.get("x-forwarded-proto") ?? (host.includes("localhost") ? "http" : "https");
   const base = new URL(`${protocol}://${host}`);
-  const title = "Body Weather — 나의 운동·회복 기후 지도";
-  const description = "Strava와 Garmin ZIP을 브라우저에서 안전하게 분석해 운동, 수면, HRV와 회복의 개인 기후를 탐색합니다.";
+  const title = "Body Weather — Experience Atlas";
+  const description = "Strava와 Garmin ZIP을 브라우저 안에서 분석해, 평생의 운동 경로와 회복 리듬을 지도·예보·추억 포스터로 펼칩니다.";
   return {
     metadataBase: base,
     title,
     description,
     icons: { icon: "/favicon.svg", shortcut: "/favicon.svg" },
-    openGraph: { title, description, type: "website", images: [{ url: new URL("/og.png", base), width: 1536, height: 1024, alt: "Body Weather 운동·회복 기후 지도" }] },
-    twitter: { card: "summary_large_image", title, description, images: [new URL("/og.png", base)] },
+    openGraph: { title, description, type: "website", images: [{ url: new URL("/og-atlas.png", base), width: 1672, height: 941, alt: "빛나는 운동 경로가 날씨 흐름처럼 겹쳐진 Body Weather Experience Atlas" }] },
+    twitter: { card: "summary_large_image", title, description, images: [new URL("/og-atlas.png", base)] },
   };
 }
 

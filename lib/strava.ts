@@ -27,8 +27,8 @@ function localDate(date: Date): string {
 export function parseStravaActivities(
   text: string,
   sourceFile: string,
-  startDate: string,
-  endDate: string,
+  startDate?: string,
+  endDate?: string,
 ): { activities: Activity[]; issues: DataQualityIssue[] } {
   const table = toCsvTable(text);
   const issues: DataQualityIssue[] = [];
@@ -52,7 +52,7 @@ export function parseStravaActivities(
       return;
     }
     const day = localDate(date);
-    if (day < startDate || day > endDate) return;
+    if ((startDate && day < startDate) || (endDate && day > endDate)) return;
     const get = (...candidates: string[]) => firstValue(row, table.positions, candidates);
     const id = get("Activity ID") ?? `strava-${date.getTime()}-${index}`;
     activities.push({
@@ -75,6 +75,8 @@ export function parseStravaActivities(
       maxPower: metric(get("Max Watts"), "W", "strava.activities", sourceFile),
       trainingLoad: metric(get("Training Load"), "score", "strava.activities", sourceFile),
       intensity: metric(get("Intensity"), "%", "strava.activities", sourceFile),
+      elevationGain: metric(get("Elevation Gain", "Total Elevation Gain"), "m", "strava.activities", sourceFile),
+      achievementCount: metric(get("Achievement Count", "Achievements"), "count", "strava.activities", sourceFile),
       filename: get("Filename")?.replace(/\\/g, "/"),
     });
   });
@@ -184,20 +186,20 @@ export async function attachRoutes(
   entries.forEach((entry) => {
     if (!entry.directory) byNormalized.set(entry.filename.replace(/\\/g, "/").toLowerCase(), entry);
   });
-  const targets = activities.filter((activity) => activity.filename).slice(0, 350);
+  const targets = activities.filter((activity) => activity.filename);
   let complete = 0;
-  for (const activity of targets) {
+  const processActivity = async (activity: Activity) => {
     const requested = activity.filename!.toLowerCase().replace(/^\//, "");
     const entry = byNormalized.get(requested) ?? byNormalized.get(`activities/${requested.split("/").pop()}`);
     if (!entry) {
       complete += 1;
       onProgress?.(complete, targets.length);
-      continue;
+      return;
     }
     try {
       const points = await parseRouteEntry(entry);
       if (points.length > 0) {
-        const stride = Math.max(1, Math.ceil(points.length / 1800));
+        const stride = Math.max(1, Math.ceil(points.length / 650));
         activity.route = points.filter((_, index) => index % stride === 0);
         activity.streamCount = points.length;
       }
@@ -213,6 +215,9 @@ export async function attachRoutes(
     }
     complete += 1;
     onProgress?.(complete, targets.length);
+  };
+  for (let offset = 0; offset < targets.length; offset += 4) {
+    await Promise.all(targets.slice(offset, offset + 4).map(processActivity));
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
   }
   return issues;
