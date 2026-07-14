@@ -16,5 +16,8 @@ test("server renders the completed Body Weather intake", async () => {
   assert.match(html, /당신의 몸에도/);
   assert.match(html, /내보내기 ZIP 가져오기/);
   assert.match(html, /LOCAL FIRST/);
+  assert.match(html, /ZIP은 어디서 받나요/);
+  assert.match(html, /support\.strava\.com/);
+  assert.match(html, /support\.garmin\.com/);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton|Your site is taking shape/);
 });

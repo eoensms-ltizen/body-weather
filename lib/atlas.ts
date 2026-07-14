@@ -46,6 +46,14 @@ export function mergeBounds(values: RouteBounds[]): RouteBounds | null {
   };
 }
 
+export function boundsIntersect(a: RouteBounds, b: RouteBounds): boolean {
+  return a.west <= b.east && a.east >= b.west && a.south <= b.north && a.north >= b.south;
+}
+
+export function routesInBounds(routes: AtlasRouteFeature[], bounds: RouteBounds): AtlasRouteFeature[] {
+  return routes.filter((route) => boundsIntersect(route.bounds, bounds));
+}
+
 export function haversineMeters(a: RoutePoint, b: RoutePoint): number {
   const toRadians = (value: number) => value * Math.PI / 180;
   const dLat = toRadians(b.latitude - a.latitude);

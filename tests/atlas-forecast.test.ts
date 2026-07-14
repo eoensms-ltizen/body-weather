@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildAtlasModel, detectPrivacyZones, maskRoute, routeBounds, simplifyRoute, subsetAtlasModel } from "../lib/atlas";
+import { boundsIntersect, buildAtlasModel, detectPrivacyZones, maskRoute, routeBounds, routesInBounds, simplifyRoute, subsetAtlasModel } from "../lib/atlas";
+import { classifyActivity } from "../lib/activity-classification";
 import { buildForecast } from "../lib/forecast";
+import { buildMemories } from "../lib/memories";
 import { posterDimensions } from "../lib/poster";
 import { metric, missingMetric, type Activity, type DailyWellness, type ImportSummary, type RoutePoint } from "../lib/types";
 import { buildVerificationSummary } from "../lib/verification-fixture";
@@ -20,6 +22,21 @@ test("route bounds choose the short antimeridian span", () => {
   const bounds = routeBounds([{ latitude: 1, longitude: 179.5 }, { latitude: 1.2, longitude: -179.6 }]);
   assert.ok(bounds);
   assert.ok(bounds.east - bounds.west < 2);
+});
+
+test("area selection returns only intersecting routes", () => {
+  const atlas = buildAtlasModel(buildVerificationSummary().activities, false);
+  const first = atlas.routes[0];
+  const tiny = { west: first.centroid[0] - 0.02, east: first.centroid[0] + 0.02, south: first.centroid[1] - 0.02, north: first.centroid[1] + 0.02 };
+  assert.equal(boundsIntersect(first.bounds, tiny), true);
+  assert.ok(routesInBounds(atlas.routes, tiny).some((route) => route.id === first.id));
+});
+
+test("activity filters distinguish sport and environment", () => {
+  assert.deepEqual(classifyActivity({ type: "VirtualRide", name: "Zwift race" }), { group: "ride", environment: "virtual" });
+  assert.deepEqual(classifyActivity({ type: "Ride", name: "Han River" }), { group: "ride", environment: "outdoor" });
+  assert.deepEqual(classifyActivity({ type: "Run", name: "Treadmill" }), { group: "run", environment: "indoor" });
+  assert.deepEqual(classifyActivity({ type: "Walk", name: "Lunch" }), { group: "walk", environment: "outdoor" });
 });
 
 test("invalid, single-point and zero-length routes are excluded", () => {
@@ -131,4 +148,15 @@ test("poster dimensions expose 4K landscape and long-edge vertical outputs", () 
   assert.deepEqual(posterDimensions("16:9"), [3840, 2160]);
   assert.deepEqual(posterDimensions("4:5"), [2160, 2700]);
   assert.deepEqual(posterDimensions("9:16"), [2160, 3840]);
+});
+
+test("memories add measured elevation without inventing missing values", () => {
+  const summary = buildVerificationSummary();
+  const memories = buildMemories(summary, buildAtlasModel(summary.activities, false));
+  const expected = summary.activities.reduce((sum, activity) => sum + (activity.elevationGain?.value ?? 0), 0);
+  assert.equal(memories.totalElevationGain, expected);
+  assert.equal(memories.elevationActivityCount, summary.activities.length);
+  const missing = structuredClone(summary);
+  missing.activities.forEach((activity) => { activity.elevationGain = missingMetric("m"); });
+  assert.equal(buildMemories(missing, buildAtlasModel(missing.activities, false)).totalElevationGain, null);
 });

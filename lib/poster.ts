@@ -1,5 +1,5 @@
-import { mergeBounds } from "./atlas";
-import type { AtlasRouteFeature, RoutePoint } from "./types";
+import { mergeBounds, routesInBounds } from "./atlas";
+import type { AtlasRouteFeature, RouteBounds, RoutePoint } from "./types";
 
 export type PosterTheme = "night" | "aurora" | "paper";
 export type PosterRatio = "16:9" | "4:5" | "9:16";
@@ -16,6 +16,7 @@ export interface PosterConfig {
   activityCount: number;
   distanceLabel: string;
   periodLabel: string;
+  cropBounds?: RouteBounds | null;
   preview?: boolean;
 }
 
@@ -106,7 +107,8 @@ export async function renderPoster(
     context.stroke();
   }
 
-  const bounds = mergeBounds(routes.map((route) => route.bounds));
+  const includedRoutes = config.cropBounds ? routesInBounds(routes, config.cropBounds) : routes;
+  const bounds = config.cropBounds ?? mergeBounds(includedRoutes.map((route) => route.bounds));
   if (bounds) {
     const mapTop = height * 0.16;
     const mapBottom = height * 0.78;
@@ -119,7 +121,11 @@ export async function renderPoster(
       mapBottom - (point.latitude - bounds.south) / latSpan * (mapBottom - mapTop),
     ];
     const achievementIds = new Set(achievementActivityIds);
-    routes.forEach((route) => {
+    context.save();
+    context.beginPath();
+    context.rect(mapLeft, mapTop, mapRight - mapLeft, mapBottom - mapTop);
+    context.clip();
+    includedRoutes.forEach((route) => {
       const points = config.preview ? route.lod.low : route.lod.medium;
       if (points.length < 2) return;
       const color = routeColor(route, config.colorMode, palette.glow, achievementIds);
@@ -136,6 +142,7 @@ export async function renderPoster(
       context.shadowBlur = Math.max(3, width / 360);
       context.stroke();
     });
+    context.restore();
   }
   context.globalAlpha = 1;
   context.shadowBlur = 0;
@@ -162,5 +169,5 @@ export async function renderPoster(
   }
 
   const blob = await canvasBlob(canvas);
-  return { blob, width, height, includedRoutes: routes.length, privacyMasked: true };
+  return { blob, width, height, includedRoutes: includedRoutes.length, privacyMasked: true };
 }

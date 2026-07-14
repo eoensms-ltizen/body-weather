@@ -1,16 +1,18 @@
 "use client";
 
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
-import type { AtlasColorMode } from "./AtlasMap";
-import { buildAtlasModel, mergeBounds, subsetAtlasModel } from "@/lib/atlas";
+import type { AtlasColorMode, AtlasInteractionMode } from "./AtlasMap";
+import { boundsIntersect, buildAtlasModel, mergeBounds, subsetAtlasModel } from "@/lib/atlas";
+import { classifyActivity, type ActivityEnvironment, type ActivityGroup } from "@/lib/activity-classification";
 import { buildForecast } from "@/lib/forecast";
 import { buildMemories } from "@/lib/memories";
 import { importHealthArchives } from "@/lib/importer";
 import { posterDimensions, renderPoster, type PosterColorMode, type PosterRatio, type PosterTheme } from "@/lib/poster";
 import { buildVerificationSummary } from "@/lib/verification-fixture";
-import type { Activity, AtlasModel, AtlasRouteFeature, Capability, ForecastSnapshot, ImportSummary, MemoryCard, MetricValue, TomorrowScenario } from "@/lib/types";
+import type { Achievement, Activity, AtlasModel, AtlasRouteFeature, Capability, ForecastSnapshot, ImportSummary, MemoryCard, MetricValue, RouteBounds, TomorrowScenario } from "@/lib/types";
 
 type View = "atlas" | "forecast" | "memories" | "data";
+interface PosterSelection { bounds: RouteBounds; routeIds: string[]; }
 
 const AtlasMap = lazy(() => import("./AtlasMap"));
 
@@ -105,6 +107,14 @@ function ImportScreen({ onImported }: { onImported: (summary: ImportSummary) => 
       {error && <p className="error-message" role="alert">{error}</p>}
       <button className="primary-action" data-testid="import-action" type="button" disabled={!files.length || busy} onClick={importFiles}>{busy ? "경험을 지도에 펼치는 중…" : "Experience Atlas 만들기"}</button>
       <p className="security-copy">안전하지 않은 압축 경로와 비정상 크기를 차단하며, 한 파일의 오류가 다른 정상 데이터를 막지 않습니다.</p>
+      <details className="export-guide">
+        <summary>ZIP은 어디서 받나요?</summary>
+        <div className="export-guide-grid">
+          <a href="https://support.strava.com/hc/en-us/articles/216918437-Exporting-your-Data-and-Bulk-Export" target="_blank" rel="noreferrer"><b>STRAVA</b><span>Settings → My Account → Download your account → Request</span><small>공식 내보내기 안내 ↗</small></a>
+          <a href="https://support.garmin.com/en-US/?faq=W1TvTPW8JZ6LfJSfK512Q8" target="_blank" rel="noreferrer"><b>GARMIN</b><span>Account Data Management → Export Your Data → Request</span><small>공식 내보내기 안내 ↗</small></a>
+        </div>
+        <p>1차 버전은 로그인 토큰을 보관하지 않는 로컬 ZIP 방식입니다. Strava 로그인은 OAuth 앱 심사·사용자 한도·토큰 보관 구조가 필요한 다음 단계로 남겨두었습니다.</p>
+      </details>
     </section>
   </main>;
 }
@@ -113,21 +123,26 @@ function CapabilityStrip({ capabilities }: { capabilities: Capability[] }) {
   return <div className="capability-strip" aria-label="활성 데이터 기능">{capabilities.map((capability) => <span key={capability.key} className={capability.state} title={capability.reason}><i />{capability.label}<b>{Math.round(capability.coverage * 100)}%</b></span>)}</div>;
 }
 
-function ActivityDrawer({ route, onClose }: { route: AtlasRouteFeature; onClose: () => void }) {
+function ActivityDrawer({ route, relatedRoutes, achievement, onSelect, onClose }: { route: AtlasRouteFeature; relatedRoutes: AtlasRouteFeature[]; achievement: Achievement | null; onSelect: (route: AtlasRouteFeature) => void; onClose: () => void }) {
   const activity = route.activity;
+  const currentIndex = Math.max(0, relatedRoutes.findIndex((item) => item.id === route.id));
+  const selectAt = (index: number) => onSelect(relatedRoutes[(index + relatedRoutes.length) % relatedRoutes.length]);
   return <aside className="detail-drawer" aria-label={`${activity.name} 활동 상세`}>
     <button className="drawer-close" type="button" onClick={onClose} aria-label="활동 상세 닫기">×</button>
-    <p className="eyebrow">ACTIVITY TRACE</p>
+    <div className="trace-heading"><p className="eyebrow">ACTIVITY TRACE</p>{relatedRoutes.length > 1 && <div><button type="button" aria-label="이전 활동" onClick={() => selectAt(currentIndex - 1)}>←</button><span>{currentIndex + 1} / {relatedRoutes.length}</span><button type="button" aria-label="다음 활동" onClick={() => selectAt(currentIndex + 1)}>→</button></div>}</div>
     <h2>{activity.name}</h2>
     <p className="drawer-meta">{formatDate(activity.localDate)} · {activity.type} · {route.masked ? "민감 위치 마스킹" : "원본 경로"}</p>
+    {achievement && <section className="achievement-detail"><span>{achievement.evidence === "source-confirmed" ? "SOURCE RECORD" : "ATLAS RECORD"}</span><h3>{achievement.title}</h3><p>{achievement.description}</p><small>{achievement.sourceField} · 신뢰도 {Math.round(achievement.confidence * 100)}%</small><em>별표 위치는 활동 경로의 대표 지점이며, 원본에 세그먼트 좌표가 없으면 실제 구간 위치를 뜻하지 않습니다.</em></section>}
     <div className="drawer-metrics">
       <div><span>거리</span><strong>{metricText(activity.distance, 1)}</strong></div>
       <div><span>이동 시간</span><strong>{formatDuration(activity.movingTime)}</strong></div>
+      <div><span>획득 고도</span><strong>{metricText(activity.elevationGain)}</strong></div>
       <div><span>평균 심박</span><strong>{metricText(activity.averageHeartRate)}</strong></div>
       <div><span>평균 파워</span><strong>{metricText(activity.averagePower)}</strong></div>
       <div><span>운동 부하</span><strong>{metricText(activity.trainingLoad.value !== null ? activity.trainingLoad : activity.relativeEffort)}</strong></div>
       <div><span>원본 경로점</span><strong>{route.rawPointCount.toLocaleString("ko-KR")}</strong></div>
     </div>
+    {relatedRoutes.length > 1 && <div className="trace-list" aria-label="이 지역의 Activity Trace"><header><span>이 지역의 활동</span><b>{relatedRoutes.length} traces</b></header>{relatedRoutes.map((item, index) => <button key={item.id} type="button" className={item.id === route.id ? "active" : ""} onClick={() => onSelect(item)}><i>{String(index + 1).padStart(2, "0")}</i><span><b>{item.activity.name}</b><small>{item.activity.localDate} · {item.activity.type} · {metricText(item.activity.distance, 1)}</small></span></button>)}</div>}
     <div className="source-block"><span>근거</span><code>{activity.source} · {activity.sourceFile}</code><small>측정되지 않은 값은 0이 아니라 ‘측정 없음’으로 유지됩니다.</small></div>
   </aside>;
 }
@@ -141,15 +156,28 @@ function AtlasView({
   rangeEnd,
   setRangeStart,
   setRangeEnd,
-  typeFilter,
-  setTypeFilter,
+  activityGroup,
+  setActivityGroup,
+  environment,
+  setEnvironment,
   reveal,
   setReveal,
   selectedRoute,
-  setSelectedRoute,
+  onRouteSelect,
+  selectedAchievement,
+  onAchievementSelect,
   focusCoordinate,
   onOpenForecast,
   fullAtlas,
+  interactionMode,
+  setInteractionMode,
+  hiddenIds,
+  onAreaSelection,
+  viewportBounds,
+  onViewportChange,
+  posterSelection,
+  onCaptureViewport,
+  onClearHidden,
 }: {
   summary: ImportSummary;
   colorMode: AtlasColorMode;
@@ -159,28 +187,41 @@ function AtlasView({
   rangeEnd: string;
   setRangeStart: (date: string) => void;
   setRangeEnd: (date: string) => void;
-  typeFilter: string;
-  setTypeFilter: (type: string) => void;
+  activityGroup: ActivityGroup | "all";
+  setActivityGroup: (group: ActivityGroup | "all") => void;
+  environment: ActivityEnvironment | "all";
+  setEnvironment: (environment: ActivityEnvironment | "all") => void;
   reveal: number;
   setReveal: (value: number) => void;
   selectedRoute: AtlasRouteFeature | null;
-  setSelectedRoute: (route: AtlasRouteFeature | null) => void;
+  onRouteSelect: (route: AtlasRouteFeature) => void;
+  selectedAchievement: Achievement | null;
+  onAchievementSelect: (achievement: Achievement) => void;
   focusCoordinate: [number, number] | null;
   onOpenForecast: () => void;
   fullAtlas: AtlasModel;
+  interactionMode: AtlasInteractionMode;
+  setInteractionMode: (mode: AtlasInteractionMode) => void;
+  hiddenIds: ReadonlySet<string>;
+  onAreaSelection: (bounds: RouteBounds, routeIds: string[]) => void;
+  viewportBounds: RouteBounds | null;
+  onViewportChange: (bounds: RouteBounds) => void;
+  posterSelection: PosterSelection | null;
+  onCaptureViewport: () => void;
+  onClearHidden: () => void;
 }) {
-  const filteredAtlas = useMemo(() => filteredActivities.length === summary.activities.length ? fullAtlas : subsetAtlasModel(fullAtlas, filteredActivities), [filteredActivities, summary.activities.length, fullAtlas]);
+  const displayedActivities = useMemo(() => interactionMode === "hide" ? filteredActivities : filteredActivities.filter((activity) => !hiddenIds.has(activity.id)), [filteredActivities, hiddenIds, interactionMode]);
+  const filteredAtlas = useMemo(() => displayedActivities.length === summary.activities.length ? fullAtlas : subsetAtlasModel(fullAtlas, displayedActivities), [displayedActivities, summary.activities.length, fullAtlas]);
   const shownRoutes = useMemo(() => filteredAtlas.routes.slice(0, Math.max(1, Math.ceil(filteredAtlas.routes.length * reveal))), [filteredAtlas.routes, reveal]);
   const shownBounds = useMemo(() => reveal < 1 ? mergeBounds(shownRoutes.map((route) => route.bounds)) : filteredAtlas.bounds, [shownRoutes, filteredAtlas.bounds, reveal]);
   const activeCapabilities = new Map(summary.capabilityProfile.capabilities.map((item) => [item.key, item]));
-  const types = [...new Set(summary.activities.map((activity) => activity.type))].sort();
   const latestForecast = buildForecast(summary);
   const threeMonthsBefore = new Date(`${summary.endDate}T12:00:00`); threeMonthsBefore.setMonth(threeMonthsBefore.getMonth() - 3);
   const lastYear = summary.endDate.slice(0, 4);
 
   return <section className="atlas-view">
-    {filteredAtlas.routes.length ? <Suspense fallback={<div className="route-empty"><span>ATLAS ENGINE</span><h2>지도를 깨우는 중</h2></div>}><AtlasMap routes={shownRoutes} bounds={shownBounds} achievements={filteredAtlas.achievements} placeClusters={filteredAtlas.placeClusters} colorMode={colorMode} selectedId={selectedRoute?.id} focusCoordinate={focusCoordinate} onSelect={setSelectedRoute} /></Suspense> : <div className="route-empty"><span>NO GPS TRACE</span><h2>경로 좌표 없이도<br />시간은 남아 있습니다.</h2><p>이 ZIP에는 지도에 그릴 좌표가 없습니다. 활동 날짜와 거리, 회복 기록으로 Forecast와 Memories를 구성했습니다.</p></div>}
-    <div className="atlas-title"><p className="eyebrow">ALL-TIME EXPERIENCE MAP</p><h1>{summary.startDate.slice(0, 4)} — {summary.endDate.slice(0, 4)}</h1><p>{filteredActivities.length.toLocaleString("ko-KR")}개 활동 · {filteredAtlas.routeActivityCount.toLocaleString("ko-KR")}개 경로 · {filteredAtlas.placeClusters.length.toLocaleString("ko-KR")}개 지역 경험</p></div>
+    {filteredAtlas.routes.length ? <Suspense fallback={<div className="route-empty"><span>ATLAS ENGINE</span><h2>지도를 깨우는 중</h2></div>}><AtlasMap routes={shownRoutes} bounds={shownBounds} achievements={filteredAtlas.achievements} placeClusters={filteredAtlas.placeClusters} colorMode={colorMode} selectedId={selectedRoute?.id} focusCoordinate={focusCoordinate} onSelect={onRouteSelect} interactionMode={interactionMode} hiddenIds={hiddenIds} selectedAchievementId={selectedAchievement?.id} onAchievementSelect={onAchievementSelect} onAreaSelection={onAreaSelection} onViewportChange={onViewportChange} /></Suspense> : <div className="route-empty"><span>NO GPS TRACE</span><h2>경로 좌표 없이도<br />시간은 남아 있습니다.</h2><p>이 ZIP에는 지도에 그릴 좌표가 없습니다. 활동 날짜와 거리, 회복 기록으로 Forecast와 Memories를 구성했습니다.</p></div>}
+    <div className="atlas-title"><p className="eyebrow">ALL-TIME EXPERIENCE MAP</p><h1>{summary.startDate.slice(0, 4)} — {summary.endDate.slice(0, 4)}</h1><p>{displayedActivities.length.toLocaleString("ko-KR")}개 활동 · {filteredAtlas.routeActivityCount.toLocaleString("ko-KR")}개 경로 · {filteredAtlas.placeClusters.length.toLocaleString("ko-KR")}개 지역 경험{hiddenIds.size ? ` · ${hiddenIds.size}개 숨김` : ""}</p></div>
     <button type="button" className={`forecast-peek weather-${latestForecast.weatherState.replace(" ", "-")}`} onClick={onOpenForecast}>
       <span>{latestForecast.displayMode === "today" ? "TODAY" : "LATEST"} · {latestForecast.asOfDate}</span>
       <strong>{latestForecast.weatherState} <b>{latestForecast.score ?? "—"}</b></strong>
@@ -194,17 +235,27 @@ function AtlasView({
         return <button key={mode.key} type="button" aria-pressed={colorMode === mode.key} disabled={disabled} className={colorMode === mode.key ? "active" : ""} onClick={() => setColorMode(mode.key)} title={disabled ? capability?.reason : mode.hint}><i className={`layer-dot ${mode.key}`} /><span>{mode.label}<small>{disabled ? "측정 없음" : mode.hint}</small></span></button>;
       })}
     </aside>
+    <div className="map-tools" aria-label="Atlas 조작 모드">
+      <button type="button" aria-pressed={interactionMode === "navigate"} className={interactionMode === "navigate" ? "active" : ""} onClick={() => setInteractionMode("navigate")}><b>이동</b><small>Drag · Zoom</small></button>
+      <button type="button" aria-pressed={interactionMode === "poster"} className={interactionMode === "poster" ? "active" : ""} onClick={() => setInteractionMode("poster")}><b>Poster 영역</b><small>드래그 선택</small></button>
+      <button type="button" aria-pressed={interactionMode === "hide"} className={interactionMode === "hide" ? "active" : ""} onClick={() => setInteractionMode("hide")}><b>DragMode</b><small>숨김 · 복원</small></button>
+      {interactionMode === "poster" && <button type="button" className="capture-view" disabled={!viewportBounds} onClick={onCaptureViewport}>현재 화면 선택</button>}
+      {hiddenIds.size > 0 && <button type="button" className="clear-hidden" onClick={onClearHidden}>숨김 전체 해제</button>}
+    </div>
+    {interactionMode !== "navigate" && <div className={`mode-hint mode-${interactionMode}`}><b>{interactionMode === "poster" ? "POSTER AREA" : "DRAGMODE"}</b><span>{interactionMode === "poster" ? "원하는 영역을 드래그하세요. 이동 모드에서 확대·이동한 뒤 ‘현재 화면 선택’도 가능합니다." : "경로를 감싸 드래그하면 숨깁니다. 회색 숨김 경로만 다시 드래그하면 복원됩니다."}</span></div>}
+    {posterSelection && <div className="poster-selection-badge"><span>POSTER AREA</span><b>{posterSelection.routeIds.length.toLocaleString("ko-KR")}개 경로 선택됨</b><small>Memories의 Poster Studio에 적용됩니다.</small></div>}
     <div className="atlas-filters">
       <div className="preset-row">
         <button type="button" aria-pressed={rangeStart === summary.startDate && rangeEnd === summary.endDate} onClick={() => { setRangeStart(summary.startDate); setRangeEnd(summary.endDate); }}>전체</button>
         <button type="button" aria-pressed={rangeStart === threeMonthsBefore.toISOString().slice(0, 10) && rangeEnd === summary.endDate} onClick={() => { setRangeStart(threeMonthsBefore.toISOString().slice(0, 10)); setRangeEnd(summary.endDate); }}>최근 3개월</button>
         <button type="button" aria-pressed={rangeStart === `${lastYear}-01-01` && rangeEnd === summary.endDate} onClick={() => { setRangeStart(`${lastYear}-01-01`); setRangeEnd(summary.endDate); }}>{lastYear}</button>
-        <select aria-label="종목 필터" value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}><option value="all">모든 종목</option>{types.map((type) => <option key={type} value={type}>{type}</option>)}</select>
+        <select aria-label="종목 필터" value={activityGroup} onChange={(event) => setActivityGroup(event.target.value as ActivityGroup | "all")}><option value="all">모든 활동</option><option value="ride">Ride</option><option value="run">Run</option><option value="walk">Walk</option><option value="hike">Hike</option><option value="other">Other</option></select>
+        <select aria-label="환경 필터" value={environment} onChange={(event) => setEnvironment(event.target.value as ActivityEnvironment | "all")}><option value="all">모든 환경</option><option value="outdoor">필드·야외</option><option value="virtual">Virtual</option><option value="indoor">Indoor</option></select>
       </div>
       <div className="range-row"><label>FROM<input type="date" value={rangeStart} min={summary.startDate} max={rangeEnd} onChange={(event) => setRangeStart(event.target.value)} /></label><span>—</span><label>TO<input type="date" value={rangeEnd} min={rangeStart} max={summary.endDate} onChange={(event) => setRangeEnd(event.target.value)} /></label></div>
     </div>
     {reveal < 1 && <div className="reveal-panel" role="status"><div><span style={{ width: `${Math.round(reveal * 100)}%` }} /></div><p>당신의 경로가 시간 위로 떠오르는 중 · {Math.round(reveal * 100)}%</p><button type="button" onClick={() => setReveal(1)}>건너뛰기</button></div>}
-    <div className="map-legend"><span><i className="source" />원본 성과</span><span><i className="derived" />Atlas 개인기록</span><b>{filteredAtlas.privacyZones.length ? `민감 위치 ${filteredAtlas.privacyZones.length}곳 마스킹` : "민감 위치 후보 없음"}</b></div>
+    <div className="map-legend"><span><i className="source" />선택 가능한 원본 성과</span><span><i className="derived" />Atlas 개인기록</span><b>{filteredAtlas.privacyZones.length ? `민감 위치 ${filteredAtlas.privacyZones.length}곳 마스킹` : "민감 위치 후보 없음"}</b></div>
   </section>;
 }
 
@@ -225,7 +276,7 @@ function ForecastView({ summary }: { summary: ImportSummary }) {
   </section>;
 }
 
-function PosterStudio({ summary, routes, achievementIds }: { summary: ImportSummary; routes: AtlasRouteFeature[]; achievementIds: string[] }) {
+function PosterStudio({ summary, routes, achievementIds, selection }: { summary: ImportSummary; routes: AtlasRouteFeature[]; achievementIds: string[]; selection: PosterSelection | null }) {
   const [title, setTitle] = useState("MY EXPERIENCE ATLAS");
   const [theme, setTheme] = useState<PosterTheme>("night");
   const [ratio, setRatio] = useState<PosterRatio>("16:9");
@@ -233,8 +284,11 @@ function PosterStudio({ summary, routes, achievementIds }: { summary: ImportSumm
   const [previewUrl, setPreviewUrl] = useState("");
   const [busy, setBusy] = useState(false);
   const [lastExport, setLastExport] = useState("");
-  const totalDistance = summary.activities.reduce((sum, activity) => sum + (activity.distance.value ?? 0), 0);
-  const baseConfig = useMemo(() => ({ title, subtitle: "Every road becomes a memory.", theme, ratio, colorMode, showStats: true, privacyMasked: true, activityCount: summary.activities.length, distanceLabel: `${totalDistance.toLocaleString("ko-KR", { maximumFractionDigits: 0 })} km`, periodLabel: `${summary.startDate} — ${summary.endDate}` }), [title, theme, ratio, colorMode, summary.activities.length, summary.startDate, summary.endDate, totalDistance]);
+  const [useSelection, setUseSelection] = useState(Boolean(selection));
+  const scopedIds = useMemo(() => useSelection && selection ? new Set(selection.routeIds) : null, [selection, useSelection]);
+  const scopedActivities = useMemo(() => scopedIds ? summary.activities.filter((activity) => scopedIds.has(activity.id)) : summary.activities, [scopedIds, summary.activities]);
+  const totalDistance = scopedActivities.reduce((sum, activity) => sum + (activity.distance.value ?? 0), 0);
+  const baseConfig = useMemo(() => ({ title, subtitle: "Every road becomes a memory.", theme, ratio, colorMode, showStats: true, privacyMasked: true, activityCount: scopedActivities.length, distanceLabel: `${totalDistance.toLocaleString("ko-KR", { maximumFractionDigits: 0 })} km`, periodLabel: `${summary.startDate} — ${summary.endDate}`, cropBounds: useSelection ? selection?.bounds ?? null : null }), [title, theme, ratio, colorMode, scopedActivities.length, summary.startDate, summary.endDate, totalDistance, useSelection, selection]);
 
   useEffect(() => {
     let disposed = false;
@@ -269,17 +323,17 @@ function PosterStudio({ summary, routes, achievementIds }: { summary: ImportSumm
 
   return <section className="poster-studio">
     <div className="poster-preview">{previewUrl ? <div className="poster-image" role="img" aria-label="개인정보가 마스킹된 Experience Atlas 포스터 미리보기" style={{ backgroundImage: `url(${previewUrl})` }} /> : <div className="poster-placeholder">POSTER PREVIEW</div>}<span>PRIVATE COORDINATES MASKED</span></div>
-    <div className="poster-controls"><p className="eyebrow">POSTER STUDIO</p><h2>경험을 한 장으로 남기기</h2><label>제목<input value={title} maxLength={36} onChange={(event) => setTitle(event.target.value)} /></label><div className="control-group"><span>테마</span><div>{(["night", "aurora", "paper"] as PosterTheme[]).map((item) => <button key={item} type="button" className={theme === item ? "active" : ""} onClick={() => setTheme(item)}>{item}</button>)}</div></div><div className="control-group"><span>비율</span><div>{(["16:9", "4:5", "9:16"] as PosterRatio[]).map((item) => <button key={item} type="button" className={ratio === item ? "active" : ""} onClick={() => setRatio(item)}>{item}</button>)}</div></div><div className="control-group"><span>경로 색상</span><select value={colorMode} onChange={(event) => setColorMode(event.target.value as PosterColorMode)}><option value="memory">Memory Glow</option><option value="sport">Sport</option><option value="season">Season</option><option value="achievement">Achievement</option></select></div><p className="poster-size">{width.toLocaleString("ko-KR")} × {height.toLocaleString("ko-KR")} PNG · GPS/EXIF 없음</p><button data-testid="poster-download" className="primary-action" type="button" disabled={busy || !routes.length} onClick={download}>{busy ? "고해상도 렌더링 중…" : "고해상도 PNG 저장"}</button>{lastExport && <p className="poster-export-status" role="status">완료 · {lastExport}</p>}</div>
+    <div className="poster-controls"><p className="eyebrow">POSTER STUDIO</p><h2>경험을 한 장으로 남기기</h2>{selection ? <div className="poster-scope"><span>추출 범위</span><div><button type="button" className={useSelection ? "active" : ""} onClick={() => setUseSelection(true)}>선택 영역 · {selection.routeIds.length}</button><button type="button" className={!useSelection ? "active" : ""} onClick={() => setUseSelection(false)}>전체 Atlas</button></div><small>Atlas의 Poster 영역 모드에서 드래그해 다시 지정할 수 있습니다.</small></div> : <p className="poster-scope-empty">전체 Atlas를 사용 중입니다. 지도에서 <b>Poster 영역</b>을 선택하면 원하는 장소만 추출할 수 있습니다.</p>}<label>제목<input value={title} maxLength={36} onChange={(event) => setTitle(event.target.value)} /></label><div className="control-group"><span>테마</span><div>{(["night", "aurora", "paper"] as PosterTheme[]).map((item) => <button key={item} type="button" className={theme === item ? "active" : ""} onClick={() => setTheme(item)}>{item}</button>)}</div></div><div className="control-group"><span>비율</span><div>{(["16:9", "4:5", "9:16"] as PosterRatio[]).map((item) => <button key={item} type="button" className={ratio === item ? "active" : ""} onClick={() => setRatio(item)}>{item}</button>)}</div></div><div className="control-group"><span>경로 색상</span><select value={colorMode} onChange={(event) => setColorMode(event.target.value as PosterColorMode)}><option value="memory">Memory Glow</option><option value="sport">Sport</option><option value="season">Season</option><option value="achievement">Achievement</option></select></div><p className="poster-size">{width.toLocaleString("ko-KR")} × {height.toLocaleString("ko-KR")} PNG · {scopedActivities.length.toLocaleString("ko-KR")}개 활동 · GPS/EXIF 없음</p><button data-testid="poster-download" className="primary-action" type="button" disabled={busy || !routes.length || !scopedActivities.length} onClick={download}>{busy ? "고해상도 렌더링 중…" : "고해상도 PNG 저장"}</button>{lastExport && <p className="poster-export-status" role="status">완료 · {lastExport}</p>}</div>
   </section>;
 }
 
-function MemoriesView({ summary, atlas, onOpenMemory }: { summary: ImportSummary; atlas: AtlasModel; onOpenMemory: (memory: MemoryCard) => void }) {
+function MemoriesView({ summary, atlas, posterSelection, onOpenMemory }: { summary: ImportSummary; atlas: AtlasModel; posterSelection: PosterSelection | null; onOpenMemory: (memory: MemoryCard) => void }) {
   const collection = useMemo(() => buildMemories(summary, atlas), [summary, atlas]);
   return <section className="memories-view content-page">
     <header className="content-header"><p className="eyebrow">MEMORIES · ALL TIME</p><h1>길은 사라져도<br /><em>경험은 지도가 됩니다.</em></h1><p>{summary.startDate} — {summary.endDate} · {collection.years.length}개의 해</p></header>
-    <div className="season-summary"><div><span>총 거리</span><strong>{collection.totalDistance === null ? "측정 없음" : `${collection.totalDistance.toLocaleString("ko-KR", { maximumFractionDigits: 0 })} km`}</strong></div><div><span>움직인 시간</span><strong>{collection.totalHours === null ? "측정 없음" : `${collection.totalHours.toLocaleString("ko-KR", { maximumFractionDigits: 0 })} h`}</strong></div><div><span>활동 일수</span><strong>{collection.activityDays.toLocaleString("ko-KR")} days</strong></div><div><span>경로 지역</span><strong>{atlas.placeClusters.length.toLocaleString("ko-KR")} places</strong></div></div>
+    <div className="season-summary"><div><span>총 거리</span><strong>{collection.totalDistance === null ? "측정 없음" : `${collection.totalDistance.toLocaleString("ko-KR", { maximumFractionDigits: 0 })} km`}</strong></div><div><span>총 획득 고도</span><strong>{collection.totalElevationGain === null ? "측정 없음" : `${collection.totalElevationGain.toLocaleString("ko-KR", { maximumFractionDigits: 0 })} m`}</strong><small>{collection.elevationActivityCount ? `${collection.elevationActivityCount.toLocaleString("ko-KR")}개 활동 측정값` : "원본 필드 없음"}</small></div><div><span>움직인 시간</span><strong>{collection.totalHours === null ? "측정 없음" : `${collection.totalHours.toLocaleString("ko-KR", { maximumFractionDigits: 0 })} h`}</strong></div><div><span>활동 일수</span><strong>{collection.activityDays.toLocaleString("ko-KR")} days</strong></div><div><span>경로 지역</span><strong>{atlas.placeClusters.length.toLocaleString("ko-KR")} places</strong></div></div>
     <div className="memory-grid">{collection.cards.map((memory, index) => <button key={memory.id} type="button" className={`memory-card kind-${memory.kind}`} onClick={() => onOpenMemory(memory)}><span>{memory.eyebrow}</span><b>{String(index + 1).padStart(2, "0")}</b><h2>{memory.title}</h2><p>{memory.description}</p><small>{memory.evidence} ↗</small></button>)}</div>
-    <PosterStudio summary={summary} routes={atlas.routes} achievementIds={atlas.achievements.map((item) => item.activityId)} />
+    <PosterStudio summary={summary} routes={atlas.routes} achievementIds={atlas.achievements.map((item) => item.activityId)} selection={posterSelection} />
   </section>;
 }
 
@@ -300,16 +354,27 @@ export default function BodyWeatherApp() {
   const [colorMode, setColorMode] = useState<AtlasColorMode>("memory");
   const [rangeStart, setRangeStart] = useState("");
   const [rangeEnd, setRangeEnd] = useState("");
-  const [typeFilter, setTypeFilter] = useState("all");
+  const [activityGroup, setActivityGroup] = useState<ActivityGroup | "all">("all");
+  const [environment, setEnvironment] = useState<ActivityEnvironment | "all">("all");
   const [reveal, setReveal] = useState(1);
   const [selectedRoute, setSelectedRoute] = useState<AtlasRouteFeature | null>(null);
+  const [selectedAchievement, setSelectedAchievement] = useState<Achievement | null>(null);
   const [focusCoordinate, setFocusCoordinate] = useState<[number, number] | null>(null);
+  const [interactionMode, setInteractionMode] = useState<AtlasInteractionMode>("navigate");
+  const [hiddenIds, setHiddenIds] = useState<Set<string>>(() => new Set());
+  const [viewportBounds, setViewportBounds] = useState<RouteBounds | null>(null);
+  const [posterSelection, setPosterSelection] = useState<PosterSelection | null>(null);
   const [fullAtlas, setFullAtlas] = useState<AtlasModel>(() => buildAtlasModel([], true));
 
   const handleImported = useCallback((result: ImportSummary) => {
     setSummary(result);
     setRangeStart(result.startDate);
     setRangeEnd(result.endDate);
+    setActivityGroup("all");
+    setEnvironment("all");
+    setHiddenIds(new Set());
+    setPosterSelection(null);
+    setInteractionMode("navigate");
     setView("atlas");
     const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     setReveal(reduced ? 1 : 0.03);
@@ -355,7 +420,49 @@ export default function BodyWeatherApp() {
 
   const filteredActivities = useMemo(() => summary?.activities.filter((activity) =>
     (!rangeStart || activity.localDate >= rangeStart) && (!rangeEnd || activity.localDate <= rangeEnd) &&
-    (typeFilter === "all" || activity.type === typeFilter)) ?? [], [summary, rangeStart, rangeEnd, typeFilter]);
+    (activityGroup === "all" || classifyActivity(activity).group === activityGroup) &&
+    (environment === "all" || classifyActivity(activity).environment === environment)) ?? [], [summary, rangeStart, rangeEnd, activityGroup, environment]);
+  const selectRoute = useCallback((route: AtlasRouteFeature) => {
+    setSelectedRoute(route);
+    setSelectedAchievement(null);
+  }, []);
+  const selectAchievement = useCallback((achievement: Achievement) => {
+    const route = fullAtlas.routes.find((item) => item.id === achievement.activityId);
+    if (!route) return;
+    setSelectedAchievement(achievement);
+    setSelectedRoute(route);
+    setFocusCoordinate(achievement.coordinate ?? route.centroid);
+  }, [fullAtlas.routes]);
+  const relatedRoutes = useMemo(() => {
+    if (!selectedRoute) return [];
+    const cluster = fullAtlas.placeClusters.find((item) => item.activityIds.includes(selectedRoute.id));
+    const ids = new Set(cluster?.activityIds ?? [selectedRoute.id]);
+    return fullAtlas.routes.filter((route) => ids.has(route.id)).sort((a, b) => b.activity.localDate.localeCompare(a.activity.localDate));
+  }, [fullAtlas.placeClusters, fullAtlas.routes, selectedRoute]);
+  const handleAreaSelection = useCallback((bounds: RouteBounds, routeIds: string[]) => {
+    if (interactionMode === "poster") {
+      setPosterSelection({ bounds, routeIds });
+      return;
+    }
+    if (interactionMode !== "hide" || !routeIds.length) return;
+    setHiddenIds((current) => {
+      const next = new Set(current);
+      const visible = routeIds.filter((id) => !current.has(id));
+      if (visible.length) visible.forEach((id) => next.add(id));
+      else routeIds.forEach((id) => next.delete(id));
+      return next;
+    });
+    if (selectedRoute && routeIds.includes(selectedRoute.id) && !hiddenIds.has(selectedRoute.id)) {
+      setSelectedRoute(null);
+      setSelectedAchievement(null);
+    }
+  }, [hiddenIds, interactionMode, selectedRoute]);
+  const captureViewport = useCallback(() => {
+    if (!viewportBounds) return;
+    const allowed = new Set(filteredActivities.map((activity) => activity.id));
+    const routeIds = fullAtlas.routes.filter((route) => allowed.has(route.id) && !hiddenIds.has(route.id) && boundsIntersect(route.bounds, viewportBounds)).map((route) => route.id);
+    setPosterSelection({ bounds: viewportBounds, routeIds });
+  }, [filteredActivities, fullAtlas.routes, hiddenIds, viewportBounds]);
   const openMemory = (memory: MemoryCard) => {
     if (!summary) return;
     if (memory.date) {
@@ -373,12 +480,12 @@ export default function BodyWeatherApp() {
     <header className="app-header">
       <button className="brand-button" type="button" onClick={() => setView("atlas")}><span>BW</span><strong>BODY WEATHER<small>EXPERIENCE ATLAS</small></strong></button>
       <nav aria-label="주요 화면"><button aria-current={view === "atlas" ? "page" : undefined} className={view === "atlas" ? "active" : ""} onClick={() => setView("atlas")}>Atlas</button><button aria-current={view === "forecast" ? "page" : undefined} className={view === "forecast" ? "active" : ""} onClick={() => setView("forecast")}>Forecast</button><button aria-current={view === "memories" ? "page" : undefined} className={view === "memories" ? "active" : ""} onClick={() => setView("memories")}>Memories</button><button aria-current={view === "data" ? "page" : undefined} className={view === "data" ? "active" : ""} onClick={() => setView("data")}>Data & Privacy</button></nav>
-      <button className="reset-button" type="button" onClick={() => { setSummary(null); setFullAtlas(buildAtlasModel([], true)); setSelectedRoute(null); setFocusCoordinate(null); }}>새 ZIP</button>
+      <button className="reset-button" type="button" onClick={() => { setSummary(null); setFullAtlas(buildAtlasModel([], true)); setSelectedRoute(null); setSelectedAchievement(null); setFocusCoordinate(null); setHiddenIds(new Set()); setPosterSelection(null); }}>새 ZIP</button>
     </header>
-    {view === "atlas" && <AtlasView summary={summary} colorMode={colorMode} setColorMode={setColorMode} filteredActivities={filteredActivities} rangeStart={rangeStart} rangeEnd={rangeEnd} setRangeStart={setRangeStart} setRangeEnd={setRangeEnd} typeFilter={typeFilter} setTypeFilter={setTypeFilter} reveal={reveal} setReveal={setReveal} selectedRoute={selectedRoute} setSelectedRoute={setSelectedRoute} focusCoordinate={focusCoordinate} onOpenForecast={() => setView("forecast")} fullAtlas={fullAtlas} />}
+    {view === "atlas" && <AtlasView summary={summary} colorMode={colorMode} setColorMode={setColorMode} filteredActivities={filteredActivities} rangeStart={rangeStart} rangeEnd={rangeEnd} setRangeStart={setRangeStart} setRangeEnd={setRangeEnd} activityGroup={activityGroup} setActivityGroup={setActivityGroup} environment={environment} setEnvironment={setEnvironment} reveal={reveal} setReveal={setReveal} selectedRoute={selectedRoute} onRouteSelect={selectRoute} selectedAchievement={selectedAchievement} onAchievementSelect={selectAchievement} focusCoordinate={focusCoordinate} onOpenForecast={() => setView("forecast")} fullAtlas={fullAtlas} interactionMode={interactionMode} setInteractionMode={setInteractionMode} hiddenIds={hiddenIds} onAreaSelection={handleAreaSelection} viewportBounds={viewportBounds} onViewportChange={setViewportBounds} posterSelection={posterSelection} onCaptureViewport={captureViewport} onClearHidden={() => setHiddenIds(new Set())} />}
     {view === "forecast" && <ForecastView summary={summary} />}
-    {view === "memories" && <MemoriesView summary={summary} atlas={fullAtlas} onOpenMemory={openMemory} />}
+    {view === "memories" && <MemoriesView summary={summary} atlas={fullAtlas} posterSelection={posterSelection} onOpenMemory={openMemory} />}
     {view === "data" && <DataView summary={summary} atlas={fullAtlas} />}
-    {selectedRoute && <ActivityDrawer route={selectedRoute} onClose={() => setSelectedRoute(null)} />}
+    {selectedRoute && <ActivityDrawer route={selectedRoute} relatedRoutes={relatedRoutes} achievement={selectedAchievement?.activityId === selectedRoute.id ? selectedAchievement : null} onSelect={selectRoute} onClose={() => { setSelectedRoute(null); setSelectedAchievement(null); }} />}
   </main>;
 }

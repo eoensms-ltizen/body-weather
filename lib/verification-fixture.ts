@@ -12,11 +12,11 @@ export function buildVerificationSummary(): ImportSummary {
     return {
       id: `verify-${index}`, source: "strava", sourceFile, date: `${date}T08:30:00.000Z`, localDate: date,
       name: index % 3 === 0 ? "Morning Tempo" : index % 3 === 1 ? "Han River Current" : "Recovery Run",
-      type: index % 3 === 2 ? "Run" : "Ride", elapsedTime: measured(3200 + index * 50, "s"), movingTime: measured(3000 + index * 45, "s"),
+      type: index === 4 ? "VirtualRide" : index % 3 === 2 ? "Run" : "Ride", elapsedTime: measured(3200 + index * 50, "s"), movingTime: measured(3000 + index * 45, "s"),
       distance: measured(12 + index * 1.7, "km"), calories: measured(380 + index * 18, "kcal"), averageHeartRate: measured(128 + index % 16, "bpm"), maxHeartRate: measured(158 + index % 18, "bpm"),
       relativeEffort: measured(35 + index * 2.4, "score"), averagePower: index % 3 === 2 ? missingMetric("W", "verification", sourceFile, "not_applicable") : measured(155 + index * 3, "W"),
       weightedAveragePower: index % 3 === 2 ? missingMetric("W", "verification", sourceFile, "not_applicable") : measured(170 + index * 3, "W"), maxPower: index % 3 === 2 ? missingMetric("W", "verification", sourceFile, "not_applicable") : measured(510 + index * 7, "W"),
-      trainingLoad: measured(42 + index * 2.7, "score"), intensity: measured(70 + index % 20, "%"),
+      trainingLoad: measured(42 + index * 2.7, "score"), intensity: measured(70 + index % 20, "%"), elevationGain: measured(310 + index * 18, "m"),
       route: Array.from({ length: 80 }, (_, point) => ({ latitude: baseLat + Math.sin(point / 10) * .035 + point * .0007, longitude: baseLon + Math.cos(point / 13) * .05 + point * .0009, heartRate: 120 + point % 35, power: index % 3 === 2 ? undefined : 145 + point % 100 })), streamCount: 1200,
     };
   });

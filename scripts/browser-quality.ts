@@ -61,6 +61,31 @@ async function runBrowser() {
   assert.equal(await page.getByRole("button", { name: /Sport 종목별 색상/ }).getAttribute("aria-pressed"), "true");
   await page.getByRole("button", { name: "최근 3개월" }).click();
   assert.equal(await page.getByRole("button", { name: "최근 3개월" }).getAttribute("aria-pressed"), "true");
+  await page.getByLabel("종목 필터").selectOption("ride");
+  await page.getByLabel("환경 필터").selectOption("virtual");
+  assert.match(await page.locator(".atlas-title").innerText(), /1개 활동/);
+  await page.getByLabel("환경 필터").selectOption("all");
+  await page.getByLabel("종목 필터").selectOption("all");
+
+  await page.getByRole("button", { name: /Poster 영역/ }).click();
+  const captureView = page.getByRole("button", { name: "현재 화면 선택" });
+  await captureView.waitFor({ state: "visible" });
+  assert.equal(await captureView.isEnabled(), true);
+  await captureView.click();
+  assert.match(await page.locator(".poster-selection-badge").innerText(), /경로 선택됨/);
+  await page.getByRole("button", { name: /이동 Drag/ }).click();
+
+  await page.getByRole("button", { name: /DragMode/ }).click();
+  const selectionSurface = page.getByTestId("map-selection-surface");
+  const selectionBox = await selectionSurface.boundingBox();
+  assert.ok(selectionBox);
+  const start = { x: selectionBox.x + selectionBox.width * .2, y: selectionBox.y + selectionBox.height * .25 };
+  const end = { x: selectionBox.x + selectionBox.width * .8, y: selectionBox.y + selectionBox.height * .78 };
+  await page.mouse.move(start.x, start.y); await page.mouse.down(); await page.mouse.move(end.x, end.y, { steps: 8 }); await page.mouse.up();
+  assert.match(await page.locator(".atlas-title").innerText(), /개 숨김/);
+  await page.mouse.move(start.x, start.y); await page.mouse.down(); await page.mouse.move(end.x, end.y, { steps: 8 }); await page.mouse.up();
+  assert.doesNotMatch(await page.locator(".atlas-title").innerText(), /개 숨김/);
+  await page.getByRole("button", { name: /이동 Drag/ }).click();
 
   const mapBox = await page.locator("canvas.maplibregl-canvas").boundingBox();
   assert.ok(mapBox, "지도 Canvas bounds가 있어야 합니다.");
@@ -83,6 +108,8 @@ async function runBrowser() {
 
   await page.getByRole("button", { name: "Memories" }).click();
   assert.ok(await page.locator(".memory-card").count() > 0);
+  assert.match(await page.locator(".season-summary").innerText(), /총 획득 고도/);
+  assert.match(await page.locator(".poster-scope").innerText(), /선택 영역/);
   assert.equal(await page.getByTestId("poster-download").isEnabled(), true);
   await page.getByRole("button", { name: "Data & Privacy" }).click();
   assert.match(await page.locator("body").innerText(), /Capability|미디어|마스킹/);

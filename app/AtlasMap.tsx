@@ -1,15 +1,16 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { type PickingInfo } from "@deck.gl/core";
 import { PathLayer, ScatterplotLayer, TextLayer } from "@deck.gl/layers";
 import { MapboxOverlay } from "@deck.gl/mapbox";
 import maplibregl, { type StyleSpecification } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
-import { routePointsForZoom } from "@/lib/atlas";
+import { routePointsForZoom, routesInBounds } from "@/lib/atlas";
 import type { Achievement, AtlasRouteFeature, PlaceCluster, RouteBounds } from "@/lib/types";
 
 export type AtlasColorMode = "memory" | "sport" | "season" | "effort" | "heart" | "power" | "achievement";
+export type AtlasInteractionMode = "navigate" | "poster" | "hide";
 
 const FALLBACK_STYLE: StyleSpecification = {
   version: 8,
@@ -44,7 +45,8 @@ function metricColor(value: number | null, low: [number, number, number], high: 
   ];
 }
 
-function routeColor(route: AtlasRouteFeature, mode: AtlasColorMode, achievements: Set<string>): [number, number, number, number] {
+function routeColor(route: AtlasRouteFeature, mode: AtlasColorMode, achievements: Set<string>, hidden: boolean): [number, number, number, number] {
+  if (hidden) return [117, 135, 139, 100];
   if (mode === "sport") {
     const key = Object.keys(SPORT_COLORS).find((name) => route.activity.type.toLowerCase().includes(name));
     return key ? SPORT_COLORS[key] : [194, 181, 255, 225];
@@ -76,6 +78,12 @@ export default function AtlasMap({
   selectedId,
   focusCoordinate,
   onSelect,
+  interactionMode,
+  hiddenIds,
+  selectedAchievementId,
+  onAchievementSelect,
+  onAreaSelection,
+  onViewportChange,
 }: {
   routes: AtlasRouteFeature[];
   bounds: RouteBounds | null;
@@ -85,19 +93,34 @@ export default function AtlasMap({
   selectedId?: string;
   focusCoordinate?: [number, number] | null;
   onSelect: (route: AtlasRouteFeature) => void;
+  interactionMode: AtlasInteractionMode;
+  hiddenIds: ReadonlySet<string>;
+  selectedAchievementId?: string;
+  onAchievementSelect: (achievement: Achievement) => void;
+  onAreaSelection: (bounds: RouteBounds, routeIds: string[]) => void;
+  onViewportChange: (bounds: RouteBounds) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const initialBoundsRef = useRef(bounds);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const overlayRef = useRef<MapboxOverlay | null>(null);
   const onSelectRef = useRef(onSelect);
+  const onAchievementSelectRef = useRef(onAchievementSelect);
+  const onAreaSelectionRef = useRef(onAreaSelection);
+  const onViewportChangeRef = useRef(onViewportChange);
+  const routesRef = useRef(routes);
   const [zoom, setZoom] = useState(5);
   const [mapState, setMapState] = useState<"loading" | "ready" | "fallback">("loading");
+  const [dragBox, setDragBox] = useState<{ startX: number; startY: number; x: number; y: number } | null>(null);
   const achievementIds = useMemo(() => new Set(achievements.map((item) => item.activityId)), [achievements]);
 
   useEffect(() => {
     onSelectRef.current = onSelect;
-  }, [onSelect]);
+    onAchievementSelectRef.current = onAchievementSelect;
+    onAreaSelectionRef.current = onAreaSelection;
+    onViewportChangeRef.current = onViewportChange;
+    routesRef.current = routes;
+  }, [onSelect, onAchievementSelect, onAreaSelection, onViewportChange, routes]);
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
@@ -117,16 +140,16 @@ export default function AtlasMap({
     map.addControl(new maplibregl.AttributionControl({ compact: true, customAttribution: "Map data © OpenStreetMap contributors" }), "bottom-right");
     const overlay = new MapboxOverlay({ interleaved: false, layers: [] });
     map.addControl(overlay as unknown as maplibregl.IControl);
-    map.on("click", (event) => {
-      const picked = overlay.pickObject({ x: event.point.x, y: event.point.y, radius: 10 });
-      if (picked?.object) onSelectRef.current(picked.object as AtlasRouteFeature);
-    });
     let recovered = false;
     map.on("load", () => {
       setMapState(recovered ? "fallback" : "ready");
       fitMap(map, initialBoundsRef.current, false);
     });
     map.on("zoom", () => setZoom(map.getZoom()));
+    map.on("moveend", () => {
+      const current = map.getBounds();
+      onViewportChangeRef.current({ west: current.getWest(), south: current.getSouth(), east: current.getEast(), north: current.getNorth() });
+    });
     map.on("error", (event) => {
       if (recovered || map.loaded()) return;
       const message = String(event.error?.message ?? "");
@@ -169,7 +192,7 @@ export default function AtlasMap({
     const overlay = overlayRef.current;
     if (!overlay) return;
     const visibleRoutes = routes.map((route) => ({ ...route, renderPath: routePointsForZoom(route, zoom).map((point) => [point.longitude, point.latitude]) as [number, number][] }));
-    const colors = (route: (typeof visibleRoutes)[number]) => routeColor(route, colorMode, achievementIds);
+    const colors = (route: (typeof visibleRoutes)[number]) => routeColor(route, colorMode, achievementIds, hiddenIds.has(route.id));
     const halo = new PathLayer({
       id: "atlas-route-halo",
       data: visibleRoutes,
@@ -203,13 +226,14 @@ export default function AtlasMap({
       id: "atlas-achievement-glow",
       data: locatedAchievements,
       getPosition: (item) => item.coordinate!,
-      getRadius: (item) => item.evidence === "source-confirmed" ? 13 : 9,
+      getRadius: (item) => item.id === selectedAchievementId ? 18 : item.evidence === "source-confirmed" ? 13 : 9,
       radiusUnits: "pixels",
       getFillColor: (item) => item.evidence === "source-confirmed" ? [248, 197, 75, 75] : [115, 239, 213, 55],
       stroked: true,
       getLineColor: (item) => item.evidence === "source-confirmed" ? [255, 225, 122, 220] : [117, 244, 218, 185],
       lineWidthMinPixels: 1,
-      pickable: false,
+      pickable: true,
+      onClick: (info: PickingInfo<Achievement>) => info.object && onAchievementSelectRef.current(info.object),
     });
     const achievementText = new TextLayer({
       id: "atlas-achievement-text",
@@ -244,12 +268,49 @@ export default function AtlasMap({
       characterSet: ["이", " ", "지", "역", "·", "회", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"],
     });
     overlay.setProps({ layers: [halo, core, achievementGlow, achievementText, clusterText] });
-  }, [routes, achievements, placeClusters, zoom, colorMode, selectedId, achievementIds]);
+  }, [routes, achievements, placeClusters, zoom, colorMode, selectedId, achievementIds, hiddenIds, selectedAchievementId]);
+
+  const pointerPosition = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  };
+  const startSelection = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (interactionMode === "navigate") return;
+    const point = pointerPosition(event);
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setDragBox({ startX: point.x, startY: point.y, ...point });
+  };
+  const moveSelection = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!dragBox) return;
+    const point = pointerPosition(event);
+    setDragBox((current) => current ? { ...current, ...point } : null);
+  };
+  const endSelection = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!dragBox || !mapRef.current) return;
+    const point = pointerPosition(event);
+    const width = Math.abs(point.x - dragBox.startX);
+    const height = Math.abs(point.y - dragBox.startY);
+    setDragBox(null);
+    if (width < 8 || height < 8) return;
+    const first = mapRef.current.unproject([dragBox.startX, dragBox.startY]);
+    const second = mapRef.current.unproject([point.x, point.y]);
+    const selectedBounds = {
+      west: Math.min(first.lng, second.lng), south: Math.min(first.lat, second.lat),
+      east: Math.max(first.lng, second.lng), north: Math.max(first.lat, second.lat),
+    };
+    onAreaSelectionRef.current(selectedBounds, routesInBounds(routesRef.current, selectedBounds).map((route) => route.id));
+  };
+
+  const boxStyle = dragBox ? {
+    left: Math.min(dragBox.startX, dragBox.x), top: Math.min(dragBox.startY, dragBox.y),
+    width: Math.abs(dragBox.x - dragBox.startX), height: Math.abs(dragBox.y - dragBox.startY),
+  } : undefined;
 
   return <div className="atlas-map-wrap">
     <div ref={containerRef} className="atlas-map" aria-label="누적 운동 경로 지도" />
     {mapState === "loading" && <div className="map-status"><i />지도를 깨우는 중</div>}
     {mapState === "fallback" && <div className="map-fallback-note">베이스맵 연결 없이 경로만 안전하게 표시하고 있습니다.</div>}
     <div className="map-atmosphere" aria-hidden="true" />
+    {interactionMode !== "navigate" && <div className={`map-selection-surface mode-${interactionMode}`} data-testid="map-selection-surface" aria-label={interactionMode === "poster" ? "포스터 영역 드래그 선택" : "숨길 활동 영역 드래그 선택"} onPointerDown={startSelection} onPointerMove={moveSelection} onPointerUp={endSelection} onPointerCancel={() => setDragBox(null)}>{dragBox && <i className="map-selection-box" style={boxStyle} />}</div>}
   </div>;
 }

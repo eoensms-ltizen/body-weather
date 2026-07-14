@@ -8,6 +8,8 @@ export interface MemoryCollection {
   cards: MemoryCard[];
   totalDistance: number | null;
   totalHours: number | null;
+  totalElevationGain: number | null;
+  elevationActivityCount: number;
   activityDays: number;
   years: number[];
 }
@@ -17,6 +19,8 @@ export function buildMemories(summary: ImportSummary, atlas: AtlasModel): Memory
   const measuredTimes = summary.activities.flatMap((activity) => activity.movingTime.value === null ? [] : [activity.movingTime.value]);
   const totalDistance = measuredDistances.length ? measuredDistances.reduce((sum, value) => sum + value, 0) : null;
   const totalHours = measuredTimes.length ? measuredTimes.reduce((sum, value) => sum + value, 0) / 3600 : null;
+  const measuredElevation = summary.activities.flatMap((activity) => activity.elevationGain?.value === null || activity.elevationGain?.value === undefined ? [] : [activity.elevationGain.value]);
+  const totalElevationGain = measuredElevation.length ? measuredElevation.reduce((sum, value) => sum + value, 0) : null;
   const cards: MemoryCard[] = [];
   const chronologically = [...summary.activities].sort((a, b) => a.date.localeCompare(b.date));
   const first = chronologically[0];
@@ -88,6 +92,8 @@ export function buildMemories(summary: ImportSummary, atlas: AtlasModel): Memory
     cards,
     totalDistance,
     totalHours,
+    totalElevationGain,
+    elevationActivityCount: measuredElevation.length,
     activityDays: new Set(summary.activities.map((activity) => activity.localDate)).size,
     years: [...new Set(summary.activities.map((activity) => Number(activity.localDate.slice(0, 4))))].filter(Number.isFinite).sort((a, b) => a - b),
   };
