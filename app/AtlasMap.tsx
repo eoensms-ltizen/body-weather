@@ -104,6 +104,7 @@ export default function AtlasMap({
   const initialBoundsRef = useRef(bounds);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const overlayRef = useRef<MapboxOverlay | null>(null);
+  const flowOverlayRef = useRef<MapboxOverlay | null>(null);
   const onSelectRef = useRef(onSelect);
   const onAchievementSelectRef = useRef(onAchievementSelect);
   const onAreaSelectionRef = useRef(onAreaSelection);
@@ -139,7 +140,9 @@ export default function AtlasMap({
     map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), "bottom-right");
     map.addControl(new maplibregl.AttributionControl({ compact: true, customAttribution: "Map data © OpenStreetMap contributors" }), "bottom-right");
     const overlay = new MapboxOverlay({ interleaved: false, layers: [] });
+    const flowOverlay = new MapboxOverlay({ interleaved: false, layers: [] });
     map.addControl(overlay as unknown as maplibregl.IControl);
+    map.addControl(flowOverlay as unknown as maplibregl.IControl);
     let recovered = false;
     map.on("load", () => {
       setMapState(recovered ? "fallback" : "ready");
@@ -167,11 +170,14 @@ export default function AtlasMap({
     }, 8_000);
     mapRef.current = map;
     overlayRef.current = overlay;
+    flowOverlayRef.current = flowOverlay;
     return () => {
       window.clearTimeout(loadTimer);
       overlay.finalize();
+      flowOverlay.finalize();
       map.remove();
       overlayRef.current = null;
+      flowOverlayRef.current = null;
       mapRef.current = null;
     };
   }, []); // Map instance is intentionally created once.
@@ -221,6 +227,20 @@ export default function AtlasMap({
       onClick: (info: PickingInfo<(typeof visibleRoutes)[number]>) => info.object && onSelectRef.current(info.object),
       parameters: { depthWriteEnabled: false },
     });
+    const hitArea = new PathLayer({
+      id: "atlas-route-hit-area",
+      data: visibleRoutes,
+      getPath: (route) => route.renderPath,
+      getColor: [255, 255, 255, 0],
+      getWidth: (route) => route.id === selectedId ? 22 : 14,
+      widthUnits: "pixels",
+      widthMinPixels: 12,
+      capRounded: true,
+      jointRounded: true,
+      pickable: true,
+      onClick: (info: PickingInfo<(typeof visibleRoutes)[number]>) => info.object && onSelectRef.current(info.object),
+      parameters: { depthWriteEnabled: false },
+    });
     const locatedAchievements = achievements.filter((item) => item.coordinate);
     const achievementGlow = new ScatterplotLayer({
       id: "atlas-achievement-glow",
@@ -267,8 +287,51 @@ export default function AtlasMap({
       fontFamily: "Pretendard, Malgun Gothic, sans-serif",
       characterSet: ["이", " ", "지", "역", "·", "회", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"],
     });
-    overlay.setProps({ layers: [halo, core, achievementGlow, achievementText, clusterText] });
+    overlay.setProps({ layers: [halo, core, hitArea, achievementGlow, achievementText, clusterText] });
   }, [routes, achievements, placeClusters, zoom, colorMode, selectedId, achievementIds, hiddenIds, selectedAchievementId]);
+
+  useEffect(() => {
+    const overlay = flowOverlayRef.current;
+    const selected = routes.find((route) => route.id === selectedId);
+    if (!overlay || !selected || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      overlay?.setProps({ layers: [] });
+      return;
+    }
+    const points = routePointsForZoom(selected, zoom).map((point) => [point.longitude, point.latitude] as [number, number]);
+    if (points.length < 2) return;
+    let frame = 0;
+    let previous = 0;
+    const animate = (timestamp: number) => {
+      if (timestamp - previous > 34) {
+        previous = timestamp;
+        const head = Math.floor(timestamp / 42) % points.length;
+        const trail = Array.from({ length: 5 }, (_, index) => ({
+          position: points[(head - index * 2 + points.length) % points.length],
+          radius: Math.max(2.5, 7 - index),
+          alpha: Math.max(35, 245 - index * 48),
+        }));
+        overlay.setProps({ layers: [new ScatterplotLayer({
+          id: "selected-trace-flow",
+          data: trail,
+          getPosition: (item) => item.position,
+          getRadius: (item) => item.radius,
+          radiusUnits: "pixels",
+          getFillColor: (item) => [245, 255, 251, item.alpha],
+          stroked: true,
+          getLineColor: [104, 236, 210, 230],
+          lineWidthMinPixels: 1,
+          pickable: false,
+          parameters: { depthWriteEnabled: false },
+        })] });
+      }
+      frame = window.requestAnimationFrame(animate);
+    };
+    frame = window.requestAnimationFrame(animate);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      overlay.setProps({ layers: [] });
+    };
+  }, [routes, selectedId, zoom]);
 
   const pointerPosition = (event: ReactPointerEvent<HTMLDivElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();

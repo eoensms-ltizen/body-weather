@@ -4,7 +4,8 @@ import { boundsIntersect, buildAtlasModel, detectPrivacyZones, maskRoute, routeB
 import { classifyActivity } from "../lib/activity-classification";
 import { buildForecast } from "../lib/forecast";
 import { buildMemories } from "../lib/memories";
-import { posterDimensions } from "../lib/poster";
+import { filterPosterRoutes, posterDimensions } from "../lib/poster";
+import { countBucket, durationBucket, sizeBucket } from "../lib/telemetry";
 import { metric, missingMetric, type Activity, type DailyWellness, type ImportSummary, type RoutePoint } from "../lib/types";
 import { buildVerificationSummary } from "../lib/verification-fixture";
 
@@ -148,6 +149,21 @@ test("poster dimensions expose 4K landscape and long-edge vertical outputs", () 
   assert.deepEqual(posterDimensions("16:9"), [3840, 2160]);
   assert.deepEqual(posterDimensions("4:5"), [2160, 2700]);
   assert.deepEqual(posterDimensions("9:16"), [2160, 3840]);
+});
+
+test("poster routes always exclude hidden activities", () => {
+  const summary = buildVerificationSummary();
+  const routes = buildAtlasModel(summary.activities, false).routes;
+  const hidden = new Set(routes.slice(0, 3).map((route) => route.id));
+  const visible = filterPosterRoutes(routes, hidden);
+  assert.equal(visible.length, routes.length - 3);
+  assert.equal(visible.some((route) => hidden.has(route.id)), false);
+});
+
+test("telemetry only exposes coarse size, duration, and count buckets", () => {
+  assert.equal(sizeBucket(2_500 * 1024 * 1024), "over_2gb");
+  assert.equal(durationBucket(95), "1_3m");
+  assert.equal(countBucket(2_474), "over_1000");
 });
 
 test("memories add measured elevation without inventing missing values", () => {

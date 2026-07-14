@@ -42,10 +42,14 @@ async function ensureServer() {
   throw new Error(`개발 서버 준비 시간이 초과되었습니다.\n${diagnostics}`);
 }
 
-async function openFixture(viewport = { width: 1440, height: 900 }): Promise<Page> {
+async function openFixture(viewport = { width: 1440, height: 900 }, atlasDelay = 0): Promise<Page> {
   const page = await browser!.newPage({ viewport, deviceScaleFactor: 1 });
-  await page.goto(`${baseUrl}/?__fixture=full`, { waitUntil: "domcontentloaded" });
+  await page.goto(`${baseUrl}/?__fixture=full${atlasDelay ? `&__atlas_delay=${atlasDelay}` : ""}`, { waitUntil: "domcontentloaded" });
   await page.getByRole("heading", { name: /2026 — 2026/ }).waitFor({ state: "visible" });
+  if (atlasDelay) {
+    await page.locator(".atlas-processing").waitFor({ state: "visible" });
+    assert.doesNotMatch(await page.locator("body").innerText(), /NO GPS TRACE/);
+  }
   await page.locator("canvas.maplibregl-canvas").waitFor({ state: "visible" });
   await page.locator(".map-status").waitFor({ state: "hidden", timeout: 12_000 });
   const skipReveal = page.getByRole("button", { name: "건너뛰기" });
@@ -55,7 +59,13 @@ async function openFixture(viewport = { width: 1440, height: 900 }): Promise<Pag
 
 async function runBrowser() {
   const pageErrors: string[] = [];
-  const page = await openFixture();
+  const intake = await browser!.newPage({ viewport: { width: 1200, height: 800 } });
+  await intake.goto(baseUrl, { waitUntil: "domcontentloaded" });
+  await intake.waitForTimeout(900);
+  await intake.getByTestId("archive-input").setInputFiles({ name: "large-export.zip", mimeType: "application/zip", buffer: Buffer.alloc(2 * 1024 * 1024) });
+  assert.match(await intake.getByTestId("import-estimate").innerText(), /예상 처리시간/);
+  await intake.close();
+  const page = await openFixture({ width: 1440, height: 900 }, 350);
   page.on("pageerror", (error) => pageErrors.push(error.message));
   await page.getByRole("button", { name: /Sport 종목별 색상/ }).click();
   assert.equal(await page.getByRole("button", { name: /Sport 종목별 색상/ }).getAttribute("aria-pressed"), "true");
