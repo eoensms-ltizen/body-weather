@@ -6,7 +6,7 @@ import { buildVerificationSummary } from "../lib/verification-fixture";
 
 const DEFAULTS: PremiereSettings = {
   length: "memory-cut",
-  cameraMode: "cinematic",
+  cameraMode: "direction",
   showActivityCard: true,
   showRecords: true,
   showSeason: true,

@@ -1,7 +1,8 @@
 import type { Achievement, AtlasRouteFeature, DailyWellness, PlaceCluster } from "./types";
+import type { PremiereCameraTuning } from "./premiere-camera";
 
 export type PremiereLength = "memory-cut" | "three-minute" | "full-chronicle";
-export type PremiereCameraMode = "follow" | "cinematic" | "overview";
+export type PremiereCameraMode = "position" | "direction" | "overview";
 export type PremiereSeason = "spring" | "summer" | "autumn" | "winter";
 export type PremiereSceneKind = "prelude" | "ride" | "jump" | "montage" | "finale";
 
@@ -72,6 +73,8 @@ export interface PremiereMapState {
   orderedRouteIds: string[];
   frame: PremiereFrame;
   cameraMode: PremiereCameraMode;
+  playbackSpeed: number;
+  cameraTuning: PremiereCameraTuning;
   freeLook: boolean;
   showRecords: boolean;
   showSeason: boolean;

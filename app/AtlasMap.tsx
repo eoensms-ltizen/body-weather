@@ -7,6 +7,7 @@ import { MapboxOverlay } from "@deck.gl/mapbox";
 import maplibregl, { type StyleSpecification } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { mergeBounds, routePointsForZoom, routesInBounds } from "@/lib/atlas";
+import { greatCircleArcPoint, smoothPremiereBearing } from "@/lib/premiere-camera";
 import type { PremiereMapState, PremiereSeason } from "@/lib/premiere";
 import type { Achievement, AtlasRouteFeature, PlaceCluster, RouteBounds } from "@/lib/types";
 
@@ -86,9 +87,8 @@ function pointAtProgress(points: [number, number][], progress: number): { point:
   return { point: points[index], index };
 }
 
-function interpolateCoordinate(from: [number, number], to: [number, number], progress: number): [number, number] {
-  const eased = progress < 0.5 ? 2 * progress * progress : 1 - Math.pow(-2 * progress + 2, 2) / 2;
-  return [from[0] + (to[0] - from[0]) * eased, from[1] + (to[1] - from[1]) * eased];
+function easeInOut(progress: number): number {
+  return progress < 0.5 ? 2 * progress * progress : 1 - Math.pow(-2 * progress + 2, 2) / 2;
 }
 
 function bearingBetween(from: [number, number], to: [number, number]): number {
@@ -149,6 +149,8 @@ export default function AtlasMap({
   const premiereRef = useRef(premiere);
   const routesRef = useRef(routes);
   const lastPremiereCameraRef = useRef(0);
+  const smoothedPremiereBearingRef = useRef(0);
+  const lastPremiereBearingRouteRef = useRef<string | null>(null);
   const wasPremiereActiveRef = useRef(false);
   const [zoom, setZoom] = useState(5);
   const [mapState, setMapState] = useState<"loading" | "ready" | "backup" | "fallback">("loading");
@@ -534,8 +536,15 @@ export default function AtlasMap({
           overlay.setProps({ layers: [] });
           return;
         }
-        const position = interpolateCoordinate(from.centroid, to.centroid, frame.progress);
-        const midpoint = interpolateCoordinate(from.centroid, to.centroid, 0.5);
+        const arcHeight = frame.jumpKind === "long-gap" ? 0.28 : frame.jumpKind === "regional" ? 0.18 : 0.08;
+        const progress = easeInOut(frame.progress);
+        const position = greatCircleArcPoint(from.centroid, to.centroid, progress, arcHeight);
+        const midpoint = greatCircleArcPoint(from.centroid, to.centroid, 0.5, arcHeight);
+        const trail = Array.from({ length: 7 }, (_, index) => ({
+          position: greatCircleArcPoint(from.centroid, to.centroid, Math.max(0, progress - index * 0.035), arcHeight),
+          radius: Math.max(2.5, 8 - index * 0.8),
+          alpha: Math.max(28, 185 - index * 24),
+        }));
         const jumpText = frame.jumpKind === "long-gap" && frame.gapDays ? `${frame.gapDays.toLocaleString("ko-KR")} DAYS LATER` : "MEMORY JUMP";
         overlay.setProps({ layers: [
           new ArcLayer({
@@ -546,8 +555,18 @@ export default function AtlasMap({
             getSourceColor: [95, 239, 215, 205],
             getTargetColor: frame.jumpKind === "long-gap" ? [255, 111, 157, 225] : [169, 142, 255, 225],
             getWidth: frame.jumpKind === "long-gap" ? 5 : 3,
+            getHeight: arcHeight,
             widthUnits: "pixels",
             greatCircle: true,
+            parameters: { depthWriteEnabled: false },
+          }),
+          new ScatterplotLayer({
+            id: "premiere-jump-trail",
+            data: trail,
+            getPosition: (item) => item.position,
+            getRadius: (item) => item.radius,
+            radiusUnits: "pixels",
+            getFillColor: (item) => [169, 142, 255, item.alpha],
             parameters: { depthWriteEnabled: false },
           }),
           new ScatterplotLayer({
@@ -649,6 +668,8 @@ export default function AtlasMap({
   const premiereCameraMode = premiere?.cameraMode;
   const premiereFreeLook = premiere?.freeLook ?? false;
   const premiereReducedMotion = premiere?.reducedMotion ?? false;
+  const premierePlaybackSpeed = premiere?.playbackSpeed ?? 1;
+  const premiereCameraTuning = premiere?.cameraTuning;
   const premiereSeason = premiere?.frame.rideMeta?.season;
 
   useEffect(() => {
@@ -661,6 +682,10 @@ export default function AtlasMap({
     });
     const duration = premiereReducedMotion ? 0 : 1_250;
     if (premiereKind === "prelude" || premiereKind === "finale") {
+      if (premiereKind === "prelude") {
+        lastPremiereBearingRouteRef.current = null;
+        smoothedPremiereBearingRef.current = map.getBearing();
+      }
       const storyBounds = mergeBounds(storyRoutes.map((route) => route.bounds));
       if (storyBounds) {
         map.fitBounds([[storyBounds.west, storyBounds.south], [storyBounds.east, storyBounds.north]], {
@@ -686,17 +711,32 @@ export default function AtlasMap({
       }
       return;
     }
-    if (premiereKind === "ride" && premiereCameraMode === "overview" && premiereRouteId) {
+    if (premiereKind === "ride" && (premiereCameraMode === "overview" || premiereCameraTuning?.fitActivity) && premiereRouteId) {
       const route = routeById.get(premiereRouteId);
-      if (route) fitMap(map, route.bounds, !premiereReducedMotion);
+      if (route) {
+        const camera = map.cameraForBounds([[route.bounds.west, route.bounds.south], [route.bounds.east, route.bounds.north]], {
+          padding: { top: 150, right: 140, bottom: 185, left: 140 },
+          bearing: 0,
+        });
+        const minimum = premiereCameraTuning?.minZoom ?? 1.5;
+        const maximum = premiereCameraTuning?.maxZoom ?? 13;
+        map.easeTo({
+          center: camera?.center ?? route.centroid,
+          zoom: Math.max(minimum, Math.min(maximum, camera?.zoom ?? 11)),
+          bearing: 0,
+          pitch: premiereCameraMode === "direction" ? 30 : 18,
+          duration,
+        });
+      }
     }
-  }, [premiereActive, premiereSceneId, premiereKind, premiereFromRouteId, premiereToRouteId, premiereCameraMode, premiereFreeLook, premiereReducedMotion, premiereOrderedIds, premiereRouteId, routes]);
+  }, [premiereActive, premiereSceneId, premiereKind, premiereFromRouteId, premiereToRouteId, premiereCameraMode, premiereCameraTuning, premiereFreeLook, premiereReducedMotion, premiereOrderedIds, premiereRouteId, routes]);
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !premiereActive || premiereKind !== "ride" || !premiereRouteId || premiereFreeLook || premiereReducedMotion || premiereCameraMode === "overview") return;
+    if (!map || !premiereActive || premiereKind !== "ride" || !premiereRouteId || premiereFreeLook || premiereReducedMotion || premiereCameraMode === "overview" || !premiereCameraTuning) return;
     const now = performance.now();
-    if (now - lastPremiereCameraRef.current < 180) return;
+    const elapsed = lastPremiereCameraRef.current ? now - lastPremiereCameraRef.current : 180;
+    if (elapsed < 150) return;
     lastPremiereCameraRef.current = now;
     const route = routes.find((item) => item.id === premiereRouteId);
     if (!route) return;
@@ -704,20 +744,39 @@ export default function AtlasMap({
     if (points.length < 2) return;
     const traveler = pointAtProgress(points, premiereProgress);
     const lead = points[Math.min(points.length - 1, traveler.index + Math.max(2, Math.round(points.length * 0.025)))];
-    const bearing = bearingBetween(traveler.point, lead);
-    const follow = premiereCameraMode === "follow";
+    if (lastPremiereBearingRouteRef.current !== premiereRouteId) {
+      lastPremiereBearingRouteRef.current = premiereRouteId;
+      smoothedPremiereBearingRef.current = map.getBearing();
+    }
+    const targetBearing = premiereCameraMode === "direction" ? bearingBetween(traveler.point, lead) : 0;
+    const bearing = premiereCameraMode === "direction"
+      ? smoothPremiereBearing(smoothedPremiereBearingRef.current, targetBearing, elapsed, premiereCameraTuning, premierePlaybackSpeed)
+      : smoothPremiereBearing(smoothedPremiereBearingRef.current, 0, elapsed, { ...premiereCameraTuning, rotationStrength: 1 }, 1);
+    smoothedPremiereBearingRef.current = bearing;
+    const fitCamera = premiereCameraTuning.fitActivity
+      ? map.cameraForBounds([[route.bounds.west, route.bounds.south], [route.bounds.east, route.bounds.north]], {
+        padding: { top: 150, right: 140, bottom: 185, left: 140 },
+        bearing,
+      })
+      : undefined;
+    const zoomTarget = premiereCameraTuning.fitActivity ? fitCamera?.zoom ?? premiereCameraTuning.followZoom : premiereCameraTuning.followZoom;
     map.easeTo({
-      center: follow ? lead : traveler.point,
-      zoom: follow ? 13.2 : 11.6,
-      pitch: follow ? 54 : 38,
-      bearing: follow ? bearing : map.getBearing() * 0.65 + bearing * 0.35,
-      duration: 320,
+      center: premiereCameraTuning.fitActivity ? fitCamera?.center ?? route.centroid : premiereCameraMode === "direction" ? lead : traveler.point,
+      zoom: Math.max(premiereCameraTuning.minZoom, Math.min(premiereCameraTuning.maxZoom, zoomTarget)),
+      pitch: premiereCameraTuning.fitActivity ? premiereCameraMode === "direction" ? 30 : 18 : premiereCameraMode === "direction" ? 48 : 32,
+      bearing,
+      duration: 360,
       easing: (value) => 1 - Math.pow(1 - value, 3),
     });
-  }, [premiereActive, premiereKind, premiereRouteId, premiereProgress, premiereCameraMode, premiereFreeLook, premiereReducedMotion, routes, zoom]);
+  }, [premiereActive, premiereKind, premiereRouteId, premiereProgress, premiereCameraMode, premiereCameraTuning, premierePlaybackSpeed, premiereFreeLook, premiereReducedMotion, routes, zoom]);
 
   useEffect(() => {
     if (wasPremiereActiveRef.current && !premiereActive && mapRef.current) fitMap(mapRef.current, bounds, true);
+    if (!premiereActive) {
+      lastPremiereCameraRef.current = 0;
+      lastPremiereBearingRouteRef.current = null;
+      smoothedPremiereBearingRef.current = 0;
+    }
     wasPremiereActiveRef.current = premiereActive;
   }, [bounds, premiereActive]);
 
