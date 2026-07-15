@@ -2,11 +2,12 @@
 
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { type PickingInfo } from "@deck.gl/core";
-import { PathLayer, ScatterplotLayer, TextLayer } from "@deck.gl/layers";
+import { ArcLayer, PathLayer, ScatterplotLayer, TextLayer } from "@deck.gl/layers";
 import { MapboxOverlay } from "@deck.gl/mapbox";
 import maplibregl, { type StyleSpecification } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
-import { routePointsForZoom, routesInBounds } from "@/lib/atlas";
+import { mergeBounds, routePointsForZoom, routesInBounds } from "@/lib/atlas";
+import type { PremiereMapState, PremiereSeason } from "@/lib/premiere";
 import type { Achievement, AtlasRouteFeature, PlaceCluster, RouteBounds } from "@/lib/types";
 
 export type AtlasColorMode = "memory" | "sport" | "season" | "effort" | "heart" | "power" | "achievement";
@@ -72,6 +73,34 @@ function fitMap(map: maplibregl.Map, bounds: RouteBounds | null, animate: boolea
   });
 }
 
+function seasonAurora(season: PremiereSeason | undefined): [number, number, number, number] {
+  if (season === "spring") return [122, 245, 174, 245];
+  if (season === "summer") return [255, 207, 84, 245];
+  if (season === "autumn") return [255, 112, 153, 245];
+  if (season === "winter") return [112, 202, 255, 245];
+  return [91, 239, 215, 245];
+}
+
+function pointAtProgress(points: [number, number][], progress: number): { point: [number, number]; index: number } {
+  const index = Math.max(0, Math.min(points.length - 1, Math.round(progress * (points.length - 1))));
+  return { point: points[index], index };
+}
+
+function interpolateCoordinate(from: [number, number], to: [number, number], progress: number): [number, number] {
+  const eased = progress < 0.5 ? 2 * progress * progress : 1 - Math.pow(-2 * progress + 2, 2) / 2;
+  return [from[0] + (to[0] - from[0]) * eased, from[1] + (to[1] - from[1]) * eased];
+}
+
+function bearingBetween(from: [number, number], to: [number, number]): number {
+  const radians = (value: number) => value * Math.PI / 180;
+  const longitudeDelta = radians(to[0] - from[0]);
+  const latitudeA = radians(from[1]);
+  const latitudeB = radians(to[1]);
+  const y = Math.sin(longitudeDelta) * Math.cos(latitudeB);
+  const x = Math.cos(latitudeA) * Math.sin(latitudeB) - Math.sin(latitudeA) * Math.cos(latitudeB) * Math.cos(longitudeDelta);
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+}
+
 export default function AtlasMap({
   routes,
   bounds,
@@ -87,6 +116,8 @@ export default function AtlasMap({
   onAchievementSelect,
   onAreaSelection,
   onViewportChange,
+  premiere,
+  onUserMapInteraction,
 }: {
   routes: AtlasRouteFeature[];
   bounds: RouteBounds | null;
@@ -102,6 +133,8 @@ export default function AtlasMap({
   onAchievementSelect: (achievement: Achievement) => void;
   onAreaSelection: (bounds: RouteBounds, routeIds: string[]) => void;
   onViewportChange: (bounds: RouteBounds) => void;
+  premiere?: PremiereMapState | null;
+  onUserMapInteraction?: () => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const initialBoundsRef = useRef(bounds);
@@ -112,7 +145,11 @@ export default function AtlasMap({
   const onAchievementSelectRef = useRef(onAchievementSelect);
   const onAreaSelectionRef = useRef(onAreaSelection);
   const onViewportChangeRef = useRef(onViewportChange);
+  const onUserMapInteractionRef = useRef(onUserMapInteraction);
+  const premiereRef = useRef(premiere);
   const routesRef = useRef(routes);
+  const lastPremiereCameraRef = useRef(0);
+  const wasPremiereActiveRef = useRef(false);
   const [zoom, setZoom] = useState(5);
   const [mapState, setMapState] = useState<"loading" | "ready" | "backup" | "fallback">("loading");
   const [dragBox, setDragBox] = useState<{ startX: number; startY: number; x: number; y: number } | null>(null);
@@ -123,8 +160,10 @@ export default function AtlasMap({
     onAchievementSelectRef.current = onAchievementSelect;
     onAreaSelectionRef.current = onAreaSelection;
     onViewportChangeRef.current = onViewportChange;
+    onUserMapInteractionRef.current = onUserMapInteraction;
+    premiereRef.current = premiere;
     routesRef.current = routes;
-  }, [onSelect, onAchievementSelect, onAreaSelection, onViewportChange, routes]);
+  }, [onSelect, onAchievementSelect, onAreaSelection, onViewportChange, onUserMapInteraction, premiere, routes]);
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
@@ -236,17 +275,26 @@ export default function AtlasMap({
     map.flyTo({ center: focusCoordinate, zoom: Math.max(11, map.getZoom()), duration: 900 });
   }, [focusCoordinate]);
 
+  const premiereActive = Boolean(premiere);
+  const premiereOrderedIds = premiere?.orderedRouteIds;
+  const premiereRevealedCount = premiere?.frame.revealedCount ?? 0;
+  const premiereRouteId = premiere?.frame.routeId;
+  const premiereShowRecords = premiere?.showRecords ?? false;
+
   useEffect(() => {
     const overlay = overlayRef.current;
     if (!overlay) return;
-    const visibleRoutes = routes.map((route) => ({ ...route, renderPath: routePointsForZoom(route, zoom).map((point) => [point.longitude, point.latitude]) as [number, number][] }));
+    const revealedIds = new Set(premiereOrderedIds?.slice(0, premiereRevealedCount) ?? []);
+    const sourceRoutes = premiereActive ? routes.filter((route) => revealedIds.has(route.id)) : routes;
+    const visibleRoutes = sourceRoutes.map((route) => ({ ...route, renderPath: routePointsForZoom(route, zoom).map((point) => [point.longitude, point.latitude]) as [number, number][] }));
+    const activeId = premiereActive ? premiereRouteId : selectedId;
     const colors = (route: (typeof visibleRoutes)[number]) => routeColor(route, colorMode, achievementIds, hiddenIds.has(route.id));
     const halo = new PathLayer({
       id: "atlas-route-halo",
       data: visibleRoutes,
       getPath: (route) => route.renderPath,
-      getColor: (route) => { const [r, g, b] = colors(route); return [r, g, b, route.id === selectedId ? 185 : colorMode === "memory" ? 72 : 58]; },
-      getWidth: (route) => route.id === selectedId ? 16 : colorMode === "memory" ? 8.5 : 5.5,
+      getColor: (route) => { const [r, g, b] = colors(route); return [r, g, b, route.id === activeId ? 185 : colorMode === "memory" ? 72 : 58]; },
+      getWidth: (route) => route.id === activeId ? 16 : colorMode === "memory" ? 8.5 : 5.5,
       widthUnits: "pixels",
       capRounded: true,
       jointRounded: true,
@@ -258,12 +306,12 @@ export default function AtlasMap({
       data: visibleRoutes,
       getPath: (route) => route.renderPath,
       getColor: colors,
-      getWidth: (route) => route.id === selectedId ? 4.2 : colorMode === "memory" ? 1.9 : 1.7,
+      getWidth: (route) => route.id === activeId ? 4.2 : colorMode === "memory" ? 1.9 : 1.7,
       widthUnits: "pixels",
       widthMinPixels: 1,
       capRounded: true,
       jointRounded: true,
-      pickable: true,
+      pickable: !premiereActive,
       autoHighlight: true,
       highlightColor: [255, 255, 255, 110],
       onClick: (info: PickingInfo<(typeof visibleRoutes)[number]>) => info.object && onSelectRef.current(info.object),
@@ -274,16 +322,16 @@ export default function AtlasMap({
       data: visibleRoutes,
       getPath: (route) => route.renderPath,
       getColor: [255, 255, 255, 0],
-      getWidth: (route) => route.id === selectedId ? 22 : 14,
+      getWidth: (route) => route.id === activeId ? 22 : 14,
       widthUnits: "pixels",
       widthMinPixels: 12,
       capRounded: true,
       jointRounded: true,
-      pickable: true,
+      pickable: !premiereActive,
       onClick: (info: PickingInfo<(typeof visibleRoutes)[number]>) => info.object && onSelectRef.current(info.object),
       parameters: { depthWriteEnabled: false },
     });
-    const locatedAchievements = achievements.filter((item) => item.coordinate);
+    const locatedAchievements = achievements.filter((item) => item.coordinate && (!premiereActive || premiereShowRecords && revealedIds.has(item.activityId)));
     const achievementGlow = new ScatterplotLayer({
       id: "atlas-achievement-glow",
       data: locatedAchievements,
@@ -294,7 +342,7 @@ export default function AtlasMap({
       stroked: true,
       getLineColor: (item) => item.evidence === "source-confirmed" ? [255, 225, 122, 220] : [117, 244, 218, 185],
       lineWidthMinPixels: 1,
-      pickable: true,
+      pickable: !premiereActive,
       onClick: (info: PickingInfo<Achievement>) => info.object && onAchievementSelectRef.current(info.object),
     });
     const achievementText = new TextLayer({
@@ -313,7 +361,7 @@ export default function AtlasMap({
     });
     const clusterText = new TextLayer({
       id: "atlas-cluster-text",
-      data: zoom >= 7 ? placeClusters.filter((item) => item.visitCount > 1).slice(0, 18) : [],
+      data: !premiereActive && zoom >= 7 ? placeClusters.filter((item) => item.visitCount > 1).slice(0, 18) : [],
       getPosition: (item) => item.center,
       getText: (item) => item.label,
       getSize: 12,
@@ -330,13 +378,230 @@ export default function AtlasMap({
       characterSet: ["이", " ", "지", "역", "·", "회", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"],
     });
     overlay.setProps({ layers: [halo, core, hitArea, achievementGlow, achievementText, clusterText] });
-  }, [routes, achievements, placeClusters, zoom, colorMode, selectedId, achievementIds, hiddenIds, selectedAchievementId]);
+  }, [routes, achievements, placeClusters, zoom, colorMode, selectedId, achievementIds, hiddenIds, selectedAchievementId, premiereActive, premiereOrderedIds, premiereRevealedCount, premiereRouteId, premiereShowRecords]);
 
   useEffect(() => {
     const overlay = flowOverlayRef.current;
-    const selected = routes.find((route) => route.id === selectedId);
-    if (!overlay || !selected || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    if (!overlay) return;
+
+    if (premiere) {
+      const frame = premiere.frame;
+      const routeById = new Map(routes.map((route) => [route.id, route]));
+      if (frame.kind === "ride" && frame.routeId) {
+        const activeRoute = routeById.get(frame.routeId);
+        if (!activeRoute) {
+          overlay.setProps({ layers: [] });
+          return;
+        }
+        const points = routePointsForZoom(activeRoute, Math.max(zoom, 9)).map((point) => [point.longitude, point.latitude] as [number, number]);
+        if (points.length < 2) {
+          overlay.setProps({ layers: [] });
+          return;
+        }
+        const traveler = pointAtProgress(points, frame.progress);
+        const partialPath = points.slice(0, Math.max(2, traveler.index + 1));
+        const aurora = seasonAurora(premiere.showSeason ? frame.rideMeta?.season : undefined);
+        const recoveryScore = premiere.showRecovery ? frame.rideMeta?.recoveryScore : null;
+        const recoveryColor: [number, number, number, number] = recoveryScore === null || recoveryScore === undefined
+          ? [94, 235, 213, 45]
+          : recoveryScore >= 70 ? [102, 245, 177, 72] : recoveryScore >= 45 ? [255, 205, 92, 72] : [255, 104, 145, 72];
+        const echoPositions = (frame.rideMeta?.echoRouteIds ?? []).flatMap((id, echoIndex) => {
+          const route = routeById.get(id);
+          if (!route) return [];
+          const echoPoints = routePointsForZoom(route, Math.max(zoom, 9)).map((point) => [point.longitude, point.latitude] as [number, number]);
+          if (echoPoints.length < 2) return [];
+          return [{ position: pointAtProgress(echoPoints, frame.progress).point, echoIndex }];
+        });
+        const achievement = frame.rideMeta?.achievementId ? achievements.find((item) => item.id === frame.rideMeta?.achievementId) : undefined;
+        const recordPosition = achievement?.coordinate ?? activeRoute.centroid;
+        const showRecord = Boolean(premiere.showRecords && achievement && frame.progress >= 0.55);
+        const showTerritory = Boolean(frame.rideMeta?.firstVisit && frame.progress <= 0.42);
+        overlay.setProps({ layers: [
+          new PathLayer({
+            id: "premiere-active-halo",
+            data: [{ path: partialPath }],
+            getPath: (item) => item.path,
+            getColor: [aurora[0], aurora[1], aurora[2], 72],
+            getWidth: 22,
+            widthUnits: "pixels",
+            capRounded: true,
+            jointRounded: true,
+            parameters: { depthWriteEnabled: false },
+          }),
+          new PathLayer({
+            id: "premiere-active-core",
+            data: [{ path: partialPath }],
+            getPath: (item) => item.path,
+            getColor: aurora,
+            getWidth: 4.2,
+            widthUnits: "pixels",
+            capRounded: true,
+            jointRounded: true,
+            parameters: { depthWriteEnabled: false },
+          }),
+          new ScatterplotLayer({
+            id: "premiere-recovery-aura",
+            data: [{ position: traveler.point }],
+            getPosition: (item) => item.position,
+            getRadius: recoveryScore === null || recoveryScore === undefined ? 25 : 32 + recoveryScore * 0.45,
+            radiusUnits: "pixels",
+            getFillColor: recoveryColor,
+            stroked: true,
+            getLineColor: [recoveryColor[0], recoveryColor[1], recoveryColor[2], 120],
+            lineWidthMinPixels: 1,
+            parameters: { depthWriteEnabled: false },
+          }),
+          new ScatterplotLayer({
+            id: "premiere-echo-travelers",
+            data: echoPositions,
+            getPosition: (item) => item.position,
+            getRadius: (item) => Math.max(3, 6 - item.echoIndex * 0.5),
+            radiusUnits: "pixels",
+            getFillColor: (item) => [145, 125, 255, Math.max(42, 135 - item.echoIndex * 18)],
+            stroked: true,
+            getLineColor: [184, 167, 255, 125],
+            lineWidthMinPixels: 1,
+            parameters: { depthWriteEnabled: false },
+          }),
+          new ScatterplotLayer({
+            id: "premiere-traveler",
+            data: [{ position: traveler.point }],
+            getPosition: (item) => item.position,
+            getRadius: 9,
+            radiusUnits: "pixels",
+            getFillColor: [246, 255, 252, 255],
+            stroked: true,
+            getLineColor: aurora,
+            lineWidthMinPixels: 3,
+            parameters: { depthWriteEnabled: false },
+          }),
+          new ScatterplotLayer({
+            id: "premiere-territory-bloom",
+            data: showTerritory ? [{ position: activeRoute.centroid }] : [],
+            getPosition: (item) => item.position,
+            getRadius: 34 + frame.progress * 120,
+            radiusUnits: "pixels",
+            getFillColor: [105, 244, 181, Math.round(65 * (1 - frame.progress))],
+            stroked: true,
+            getLineColor: [128, 255, 198, 175],
+            lineWidthMinPixels: 1,
+            parameters: { depthWriteEnabled: false },
+          }),
+          new TextLayer({
+            id: "premiere-territory-label",
+            data: showTerritory ? [{ position: activeRoute.centroid, text: "NEW TERRITORY" }] : [],
+            getPosition: (item) => item.position,
+            getText: (item) => item.text,
+            getSize: 13,
+            getColor: [188, 255, 219, 245],
+            getPixelOffset: [0, -34],
+            getTextAnchor: "middle",
+            getAlignmentBaseline: "bottom",
+            fontFamily: "Arial, sans-serif",
+          }),
+          new ScatterplotLayer({
+            id: "premiere-record-beacon",
+            data: showRecord ? [{ position: recordPosition }] : [],
+            getPosition: (item) => item.position,
+            getRadius: 24 + Math.sin(frame.progress * Math.PI * 8) * 4,
+            radiusUnits: "pixels",
+            getFillColor: [255, 202, 78, 50],
+            stroked: true,
+            getLineColor: [255, 224, 132, 225],
+            lineWidthMinPixels: 2,
+            parameters: { depthWriteEnabled: false },
+          }),
+          new TextLayer({
+            id: "premiere-record-label",
+            data: showRecord ? [{ position: recordPosition, text: achievement?.evidence === "source-confirmed" ? "◆ RECORD" : "★ ATLAS RECORD" }] : [],
+            getPosition: (item) => item.position,
+            getText: (item) => item.text,
+            getSize: 15,
+            getColor: [255, 226, 132, 255],
+            getPixelOffset: [0, -31],
+            getTextAnchor: "middle",
+            getAlignmentBaseline: "bottom",
+            fontFamily: "Arial, sans-serif",
+          }),
+        ] });
+        return;
+      }
+
+      if (frame.kind === "jump" && frame.fromRouteId && frame.toRouteId) {
+        const from = routeById.get(frame.fromRouteId);
+        const to = routeById.get(frame.toRouteId);
+        if (!from || !to) {
+          overlay.setProps({ layers: [] });
+          return;
+        }
+        const position = interpolateCoordinate(from.centroid, to.centroid, frame.progress);
+        const midpoint = interpolateCoordinate(from.centroid, to.centroid, 0.5);
+        const jumpText = frame.jumpKind === "long-gap" && frame.gapDays ? `${frame.gapDays.toLocaleString("ko-KR")} DAYS LATER` : "MEMORY JUMP";
+        overlay.setProps({ layers: [
+          new ArcLayer({
+            id: "premiere-memory-jump",
+            data: [{ source: from.centroid, target: to.centroid }],
+            getSourcePosition: (item) => item.source,
+            getTargetPosition: (item) => item.target,
+            getSourceColor: [95, 239, 215, 205],
+            getTargetColor: frame.jumpKind === "long-gap" ? [255, 111, 157, 225] : [169, 142, 255, 225],
+            getWidth: frame.jumpKind === "long-gap" ? 5 : 3,
+            widthUnits: "pixels",
+            greatCircle: true,
+            parameters: { depthWriteEnabled: false },
+          }),
+          new ScatterplotLayer({
+            id: "premiere-jump-traveler",
+            data: [{ position }],
+            getPosition: (item) => item.position,
+            getRadius: 10,
+            radiusUnits: "pixels",
+            getFillColor: [248, 255, 252, 255],
+            stroked: true,
+            getLineColor: [169, 142, 255, 245],
+            lineWidthMinPixels: 3,
+            parameters: { depthWriteEnabled: false },
+          }),
+          new TextLayer({
+            id: "premiere-jump-label",
+            data: [{ position: midpoint, text: jumpText }],
+            getPosition: (item) => item.position,
+            getText: (item) => item.text,
+            getSize: 14,
+            getColor: [223, 214, 255, 245],
+            getPixelOffset: [0, -20],
+            getTextAnchor: "middle",
+            getAlignmentBaseline: "bottom",
+            fontFamily: "Arial, sans-serif",
+          }),
+        ] });
+        return;
+      }
+
+      if (frame.kind === "montage" && frame.revealedCount > 0) {
+        const latest = routeById.get(premiere.orderedRouteIds[Math.min(frame.revealedCount - 1, premiere.orderedRouteIds.length - 1)]);
+        overlay.setProps({ layers: latest ? [new ScatterplotLayer({
+          id: "premiere-montage-pulse",
+          data: [{ position: latest.centroid }],
+          getPosition: (item) => item.position,
+          getRadius: 22 + frame.progress * 44,
+          radiusUnits: "pixels",
+          getFillColor: [94, 239, 215, Math.round(75 * (1 - frame.progress))],
+          stroked: true,
+          getLineColor: [132, 252, 224, 175],
+          lineWidthMinPixels: 1,
+          parameters: { depthWriteEnabled: false },
+        })] : [] });
+        return;
+      }
+
       overlay?.setProps({ layers: [] });
+      return;
+    }
+
+    const selected = routes.find((route) => route.id === selectedId);
+    if (!selected || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      overlay.setProps({ layers: [] });
       return;
     }
     const points = routePointsForZoom(selected, zoom).map((point) => [point.longitude, point.latitude] as [number, number]);
@@ -374,7 +639,87 @@ export default function AtlasMap({
       window.cancelAnimationFrame(frame);
       overlay.setProps({ layers: [] });
     };
-  }, [routes, selectedId, zoom]);
+  }, [routes, selectedId, zoom, premiere, achievements]);
+
+  const premiereSceneId = premiere?.frame.sceneId;
+  const premiereKind = premiere?.frame.kind;
+  const premiereFromRouteId = premiere?.frame.fromRouteId;
+  const premiereToRouteId = premiere?.frame.toRouteId;
+  const premiereProgress = premiere?.frame.progress ?? 0;
+  const premiereCameraMode = premiere?.cameraMode;
+  const premiereFreeLook = premiere?.freeLook ?? false;
+  const premiereReducedMotion = premiere?.reducedMotion ?? false;
+  const premiereSeason = premiere?.frame.rideMeta?.season;
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !premiereActive || premiereFreeLook) return;
+    const routeById = new Map(routes.map((route) => [route.id, route]));
+    const storyRoutes = (premiereOrderedIds ?? []).flatMap((id) => {
+      const route = routeById.get(id);
+      return route ? [route] : [];
+    });
+    const duration = premiereReducedMotion ? 0 : 1_250;
+    if (premiereKind === "prelude" || premiereKind === "finale") {
+      const storyBounds = mergeBounds(storyRoutes.map((route) => route.bounds));
+      if (storyBounds) {
+        map.fitBounds([[storyBounds.west, storyBounds.south], [storyBounds.east, storyBounds.north]], {
+          padding: { top: 130, right: 120, bottom: 165, left: 120 },
+          duration,
+          maxZoom: 12,
+          pitch: premiereKind === "finale" ? 20 : 0,
+        });
+      }
+      return;
+    }
+    if (premiereKind === "jump" && premiereFromRouteId && premiereToRouteId) {
+      const from = routeById.get(premiereFromRouteId);
+      const to = routeById.get(premiereToRouteId);
+      const jumpBounds = from && to ? mergeBounds([from.bounds, to.bounds]) : null;
+      if (jumpBounds) {
+        map.fitBounds([[jumpBounds.west, jumpBounds.south], [jumpBounds.east, jumpBounds.north]], {
+          padding: { top: 170, right: 155, bottom: 190, left: 155 },
+          duration,
+          maxZoom: 10.5,
+          pitch: 28,
+        });
+      }
+      return;
+    }
+    if (premiereKind === "ride" && premiereCameraMode === "overview" && premiereRouteId) {
+      const route = routeById.get(premiereRouteId);
+      if (route) fitMap(map, route.bounds, !premiereReducedMotion);
+    }
+  }, [premiereActive, premiereSceneId, premiereKind, premiereFromRouteId, premiereToRouteId, premiereCameraMode, premiereFreeLook, premiereReducedMotion, premiereOrderedIds, premiereRouteId, routes]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !premiereActive || premiereKind !== "ride" || !premiereRouteId || premiereFreeLook || premiereReducedMotion || premiereCameraMode === "overview") return;
+    const now = performance.now();
+    if (now - lastPremiereCameraRef.current < 180) return;
+    lastPremiereCameraRef.current = now;
+    const route = routes.find((item) => item.id === premiereRouteId);
+    if (!route) return;
+    const points = routePointsForZoom(route, Math.max(zoom, 9)).map((point) => [point.longitude, point.latitude] as [number, number]);
+    if (points.length < 2) return;
+    const traveler = pointAtProgress(points, premiereProgress);
+    const lead = points[Math.min(points.length - 1, traveler.index + Math.max(2, Math.round(points.length * 0.025)))];
+    const bearing = bearingBetween(traveler.point, lead);
+    const follow = premiereCameraMode === "follow";
+    map.easeTo({
+      center: follow ? lead : traveler.point,
+      zoom: follow ? 13.2 : 11.6,
+      pitch: follow ? 54 : 38,
+      bearing: follow ? bearing : map.getBearing() * 0.65 + bearing * 0.35,
+      duration: 320,
+      easing: (value) => 1 - Math.pow(1 - value, 3),
+    });
+  }, [premiereActive, premiereKind, premiereRouteId, premiereProgress, premiereCameraMode, premiereFreeLook, premiereReducedMotion, routes, zoom]);
+
+  useEffect(() => {
+    if (wasPremiereActiveRef.current && !premiereActive && mapRef.current) fitMap(mapRef.current, bounds, true);
+    wasPremiereActiveRef.current = premiereActive;
+  }, [bounds, premiereActive]);
 
   const pointerPosition = (event: ReactPointerEvent<HTMLDivElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
@@ -412,12 +757,12 @@ export default function AtlasMap({
     width: Math.abs(dragBox.x - dragBox.startX), height: Math.abs(dragBox.y - dragBox.startY),
   } : undefined;
 
-  return <div className={`atlas-map-wrap aurora-${colorMode}`}>
+  return <div className={`atlas-map-wrap aurora-${colorMode}${premiereActive ? ` premiere-active premiere-${premiereSeason ?? "memory"}` : ""}`} onPointerDown={() => { if (premiereRef.current) onUserMapInteractionRef.current?.(); }} onWheel={() => { if (premiereRef.current) onUserMapInteractionRef.current?.(); }}>
     <div ref={containerRef} className="atlas-map" aria-label="누적 운동 경로 지도" />
     {mapState === "loading" && <div className="map-status"><i />지도를 깨우는 중</div>}
     {mapState === "backup" && <div className="map-provider-note">보조 지도에 연결했습니다.</div>}
     {mapState === "fallback" && <div className="map-fallback-note">지도 공급자 연결이 모두 지연되어 경로만 표시하고 있습니다. 네트워크가 회복되면 새로고침해 주세요.</div>}
     <div className="map-atmosphere" aria-hidden="true" />
-    {interactionMode !== "navigate" && <div className={`map-selection-surface mode-${interactionMode}`} data-testid="map-selection-surface" aria-label={interactionMode === "poster" ? "포스터 영역 드래그 선택" : "숨길 활동 영역 드래그 선택"} onPointerDown={startSelection} onPointerMove={moveSelection} onPointerUp={endSelection} onPointerCancel={() => setDragBox(null)}>{dragBox && <i className="map-selection-box" style={boxStyle} />}</div>}
+    {!premiereActive && interactionMode !== "navigate" && <div className={`map-selection-surface mode-${interactionMode}`} data-testid="map-selection-surface" aria-label={interactionMode === "poster" ? "포스터 영역 드래그 선택" : "숨길 활동 영역 드래그 선택"} onPointerDown={startSelection} onPointerMove={moveSelection} onPointerUp={endSelection} onPointerCancel={() => setDragBox(null)}>{dragBox && <i className="map-selection-box" style={boxStyle} />}</div>}
   </div>;
 }
