@@ -174,6 +174,16 @@ test("poster routes always exclude hidden activities", () => {
   assert.equal(visible.some((route) => hidden.has(route.id)), false);
 });
 
+test("poster routes honor the active Atlas filter as well as hidden activities", () => {
+  const summary = buildVerificationSummary();
+  const routes = buildAtlasModel(summary.activities, false).routes;
+  const allowed = new Set(routes.slice(3, 9).map((route) => route.id));
+  const hidden = new Set([routes[5].id]);
+  const scoped = filterPosterRoutes(routes, hidden, allowed);
+  assert.equal(scoped.length, allowed.size - 1);
+  assert.equal(scoped.every((route) => allowed.has(route.id) && !hidden.has(route.id)), true);
+});
+
 test("telemetry only exposes coarse size, duration, and count buckets", () => {
   assert.equal(sizeBucket(2_500 * 1024 * 1024), "over_2gb");
   assert.equal(durationBucket(95), "1_3m");

@@ -157,6 +157,9 @@ button, summary { -webkit-tap-highlight-color: transparent; }
 .preset-row button, .preset-row select { padding: 7px 10px; border: 1px solid transparent; border-radius: 999px; background: rgba(255,255,255,.04); color: #9db0ad; font-size: 9px; cursor: pointer; }
 .preset-row select { border-color: var(--line); }
 .preset-row select:first-of-type { margin-left: auto; }
+.preset-row .filter-poster-action { border-color: rgba(104,236,210,.3); background: linear-gradient(90deg, rgba(104,236,210,.13), rgba(149,124,255,.1)); color: var(--mint); white-space: nowrap; }
+.preset-row .filter-poster-action:hover { border-color: rgba(104,236,210,.55); box-shadow: 0 0 20px rgba(104,236,210,.08); }
+.preset-row .filter-poster-action:disabled { opacity: .38; cursor: not-allowed; box-shadow: none; }
 .range-row { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 9px; }
 .range-row label { display: flex; align-items: center; gap: 7px; color: #6e8480; font-size: 8px; letter-spacing: .12em; }
 .range-row input { padding: 3px 7px; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: #c5d2ce; font-size: 10px; }
@@ -238,8 +241,8 @@ button, summary { -webkit-tap-highlight-color: transparent; }
 .poster-placeholder { color: #5c7570; letter-spacing: .17em; font-size: 11px; }
 .poster-controls { padding: 30px; border: 1px solid var(--line); border-radius: 23px; background: rgba(5,18,23,.58); }
 .poster-scope { margin: 0 0 20px; padding: 13px; border: 1px solid rgba(104,236,210,.2); border-radius: 12px; background: rgba(104,236,210,.04); }
-.poster-scope > span { display: block; margin-bottom: 8px; color: var(--mint); font-size: 8px; letter-spacing: .1em; }.poster-scope > div { display: flex; gap: 5px; }
-.poster-scope button { flex: 1; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: #839793; font-size: 8px; cursor: pointer; }.poster-scope button.active { border-color: var(--mint); color: var(--mint); }
+.poster-scope > span { display: block; margin-bottom: 8px; color: var(--mint); font-size: 8px; letter-spacing: .1em; }.poster-scope > div { display: flex; flex-wrap: wrap; gap: 5px; }
+.poster-scope button { min-width: 96px; flex: 1; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: #839793; font-size: 8px; cursor: pointer; }.poster-scope button.active { border-color: var(--mint); color: var(--mint); background: rgba(104,236,210,.07); box-shadow: 0 0 18px rgba(104,236,210,.06); }
 .poster-scope small { display: block; margin-top: 8px; color: #647974; font-size: 7px; line-height: 1.4; }.poster-scope-empty { margin: 0 0 20px; padding: 12px; border: 1px dashed var(--line); border-radius: 11px; color: #718681; font-size: 8px; line-height: 1.5; }.poster-scope-empty b { color: var(--mint); }
 .poster-hidden-note { margin: -8px 0 18px; padding: 9px 11px; border-left: 2px solid var(--coral); background: rgba(255,118,95,.045); color: #a88d87; font-size: 8px; }
 .control-group { margin-top: 20px; }

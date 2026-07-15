@@ -14,6 +14,7 @@ import type { Achievement, Activity, AtlasModel, AtlasRouteFeature, Capability, 
 
 type View = "atlas" | "forecast" | "memories" | "data";
 type AtlasBuildState = "idle" | "building" | "ready";
+type PosterScope = "filter" | "selection" | "all";
 interface PosterSelection { bounds: RouteBounds; routeIds: string[]; }
 
 const AtlasMap = lazy(() => import("./AtlasMap"));
@@ -34,6 +35,21 @@ const SCENARIOS: Array<{ key: TomorrowScenario; label: string; copy: string }> =
   { key: "moderate", label: "보통", copy: "평소 정도로 운동하는 경우" },
   { key: "hard", label: "고강도", copy: "강한 자극을 주는 경우" },
 ];
+
+const ACTIVITY_GROUP_LABEL: Record<ActivityGroup, string> = { ride: "Ride", run: "Run", walk: "Walk", hike: "Hike", other: "Other" };
+const ENVIRONMENT_LABEL: Record<ActivityEnvironment, string> = { outdoor: "필드·야외", virtual: "Virtual", indoor: "Indoor" };
+
+function describeAtlasFilter(
+  rangeStart: string,
+  rangeEnd: string,
+  activityGroup: ActivityGroup | "all",
+  environment: ActivityEnvironment | "all",
+): string {
+  const parts = [`${rangeStart || "처음"} — ${rangeEnd || "최근"}`];
+  if (activityGroup !== "all") parts.push(ACTIVITY_GROUP_LABEL[activityGroup]);
+  if (environment !== "all") parts.push(ENVIRONMENT_LABEL[environment]);
+  return parts.join(" · ");
+}
 
 function metricText(metric: MetricValue | undefined, digits = 0): string {
   if (!metric || metric.value === null) return "측정 없음";
@@ -206,6 +222,7 @@ function AtlasView({
   onAchievementSelect,
   focusCoordinate,
   onOpenForecast,
+  onOpenMemories,
   fullAtlas,
   atlasState,
   interactionMode,
@@ -238,6 +255,7 @@ function AtlasView({
   onAchievementSelect: (achievement: Achievement) => void;
   focusCoordinate: [number, number] | null;
   onOpenForecast: () => void;
+  onOpenMemories: () => void;
   fullAtlas: AtlasModel;
   atlasState: AtlasBuildState;
   interactionMode: AtlasInteractionMode;
@@ -290,6 +308,7 @@ function AtlasView({
         <button type="button" aria-pressed={rangeStart === `${lastYear}-01-01` && rangeEnd === summary.endDate} onClick={() => { setRangeStart(`${lastYear}-01-01`); setRangeEnd(summary.endDate); }}>{lastYear}</button>
         <select aria-label="종목 필터" value={activityGroup} onChange={(event) => setActivityGroup(event.target.value as ActivityGroup | "all")}><option value="all">모든 활동</option><option value="ride">Ride</option><option value="run">Run</option><option value="walk">Walk</option><option value="hike">Hike</option><option value="other">Other</option></select>
         <select aria-label="환경 필터" value={environment} onChange={(event) => setEnvironment(event.target.value as ActivityEnvironment | "all")}><option value="all">모든 환경</option><option value="outdoor">필드·야외</option><option value="virtual">Virtual</option><option value="indoor">Indoor</option></select>
+        <button type="button" className="filter-poster-action" disabled={!filteredActivities.length} onClick={onOpenMemories}>이 결과로 PNG</button>
       </div>
       <div className="range-row"><label>FROM<input type="date" value={rangeStart} min={summary.startDate} max={rangeEnd} onChange={(event) => setRangeStart(event.target.value)} /></label><span>—</span><label>TO<input type="date" value={rangeEnd} min={rangeStart} max={summary.endDate} onChange={(event) => setRangeEnd(event.target.value)} /></label></div>
     </div>
@@ -315,7 +334,7 @@ function ForecastView({ summary }: { summary: ImportSummary }) {
   </section>;
 }
 
-function PosterStudio({ summary, routes, achievementIds, selection, hiddenIds }: { summary: ImportSummary; routes: AtlasRouteFeature[]; achievementIds: string[]; selection: PosterSelection | null; hiddenIds: ReadonlySet<string> }) {
+function PosterStudio({ summary, routes, achievementIds, selection, hiddenIds, filteredActivities, filterActive, filterLabel }: { summary: ImportSummary; routes: AtlasRouteFeature[]; achievementIds: string[]; selection: PosterSelection | null; hiddenIds: ReadonlySet<string>; filteredActivities: Activity[]; filterActive: boolean; filterLabel: string }) {
   const [title, setTitle] = useState("MY EXPERIENCE ATLAS");
   const [theme, setTheme] = useState<PosterTheme>("aurora");
   const [ratio, setRatio] = useState<PosterRatio>("16:9");
@@ -324,12 +343,30 @@ function PosterStudio({ summary, routes, achievementIds, selection, hiddenIds }:
   const [previewUrl, setPreviewUrl] = useState("");
   const [busy, setBusy] = useState(false);
   const [lastExport, setLastExport] = useState("");
-  const [useSelection, setUseSelection] = useState(Boolean(selection));
-  const scopedIds = useMemo(() => useSelection && selection ? new Set(selection.routeIds) : null, [selection, useSelection]);
-  const availableRoutes = useMemo(() => filterPosterRoutes(routes, hiddenIds), [hiddenIds, routes]);
+  const [scope, setScope] = useState<PosterScope>(() => filterActive ? "filter" : selection ? "selection" : "all");
+  const effectiveScope: PosterScope = scope === "selection" && !selection
+    ? filterActive ? "filter" : "all"
+    : scope === "filter" && !filterActive
+      ? selection ? "selection" : "all"
+      : scope;
+  const filteredIds = useMemo(() => new Set(filteredActivities.map((activity) => activity.id)), [filteredActivities]);
+  const scopedIds = useMemo(() => effectiveScope === "filter" ? filteredIds : effectiveScope === "selection" && selection ? new Set(selection.routeIds) : null, [effectiveScope, filteredIds, selection]);
+  const availableRoutes = useMemo(() => filterPosterRoutes(routes, hiddenIds, scopedIds), [hiddenIds, routes, scopedIds]);
   const scopedActivities = useMemo(() => summary.activities.filter((activity) => !hiddenIds.has(activity.id) && (!scopedIds || scopedIds.has(activity.id))), [hiddenIds, scopedIds, summary.activities]);
+  const fullVisibleCount = useMemo(() => summary.activities.filter((activity) => !hiddenIds.has(activity.id)).length, [hiddenIds, summary.activities]);
+  const filterVisibleCount = useMemo(() => filteredActivities.filter((activity) => !hiddenIds.has(activity.id)).length, [filteredActivities, hiddenIds]);
+  const selectionVisibleCount = useMemo(() => selection ? selection.routeIds.filter((id) => !hiddenIds.has(id)).length : 0, [hiddenIds, selection]);
   const totalDistance = scopedActivities.reduce((sum, activity) => sum + (activity.distance.value ?? 0), 0);
-  const baseConfig = useMemo(() => ({ title, subtitle: "Every road becomes a memory.", theme, ratio, colorMode, showStats: true, showBaseMap, privacyMasked: true, activityCount: scopedActivities.length, distanceLabel: `${totalDistance.toLocaleString("ko-KR", { maximumFractionDigits: 0 })} km`, periodLabel: `${summary.startDate} — ${summary.endDate}`, cropBounds: useSelection ? selection?.bounds ?? null : null }), [title, theme, ratio, colorMode, showBaseMap, scopedActivities.length, summary.startDate, summary.endDate, totalDistance, useSelection, selection]);
+  const scopedPeriod = useMemo(() => {
+    const dates = scopedActivities.map((activity) => activity.localDate).filter(Boolean).sort();
+    return dates.length ? `${dates[0]} — ${dates.at(-1)}` : `${summary.startDate} — ${summary.endDate}`;
+  }, [scopedActivities, summary.endDate, summary.startDate]);
+  const scopeDescription = effectiveScope === "filter"
+    ? `${filterLabel} · ${availableRoutes.length.toLocaleString("ko-KR")}개 경로`
+    : effectiveScope === "selection"
+      ? `Atlas에서 지정한 지도 영역 · ${availableRoutes.length.toLocaleString("ko-KR")}개 경로`
+      : `가져온 전체 기간 · ${availableRoutes.length.toLocaleString("ko-KR")}개 경로`;
+  const baseConfig = useMemo(() => ({ title, subtitle: "Every road becomes a memory.", theme, ratio, colorMode, showStats: true, showBaseMap, privacyMasked: true, activityCount: scopedActivities.length, distanceLabel: `${totalDistance.toLocaleString("ko-KR", { maximumFractionDigits: 0 })} km`, periodLabel: scopedPeriod, cropBounds: effectiveScope === "selection" ? selection?.bounds ?? null : null }), [title, theme, ratio, colorMode, showBaseMap, scopedActivities.length, totalDistance, scopedPeriod, effectiveScope, selection]);
 
   useEffect(() => {
     let disposed = false;
@@ -352,13 +389,13 @@ function PosterStudio({ summary, routes, achievementIds, selection, hiddenIds }:
       const url = URL.createObjectURL(result.blob);
       const anchor = document.createElement("a");
       anchor.href = url;
-      anchor.download = `body-weather-atlas-${ratio.replace(":", "x")}.png`;
+      anchor.download = `body-weather-atlas-${effectiveScope}-${ratio.replace(":", "x")}.png`;
       document.body.appendChild(anchor);
       anchor.click();
       anchor.remove();
       const mapStatus = showBaseMap ? (result.baseMapRendered ? "지도 포함" : "지도 타일 실패 → 경로 배경") : "경로 배경";
       setLastExport(`${result.width.toLocaleString("ko-KR")} × ${result.height.toLocaleString("ko-KR")} · ${(result.blob.size / 1024 / 1024).toFixed(1)} MB · ${mapStatus} · 민감 위치 마스킹`);
-      trackEvent("poster_exported", { ratio, scope: useSelection ? "selected_area" : "full_atlas", route_count: countBucket(result.includedRoutes) });
+      trackEvent("poster_exported", { ratio, scope: effectiveScope === "filter" ? "atlas_filter" : effectiveScope === "selection" ? "selected_area" : "full_atlas", route_count: countBucket(result.includedRoutes) });
       window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     } finally { setBusy(false); }
   };
@@ -366,17 +403,37 @@ function PosterStudio({ summary, routes, achievementIds, selection, hiddenIds }:
 
   return <section className="poster-studio">
     <div className="poster-preview">{previewUrl ? <div className="poster-image" role="img" aria-label="개인정보가 마스킹된 Experience Atlas 포스터 미리보기" style={{ backgroundImage: `url(${previewUrl})` }} /> : <div className="poster-placeholder">POSTER PREVIEW</div>}<span>PRIVATE COORDINATES MASKED</span></div>
-    <div className="poster-controls"><p className="eyebrow">POSTER STUDIO</p><h2>경험을 한 장으로 남기기</h2>{selection ? <div className="poster-scope"><span>추출 범위</span><div><button type="button" className={useSelection ? "active" : ""} onClick={() => setUseSelection(true)}>선택 영역 · {selection.routeIds.filter((id) => !hiddenIds.has(id)).length}</button><button type="button" className={!useSelection ? "active" : ""} onClick={() => setUseSelection(false)}>전체 Atlas</button></div><small>Atlas의 Poster 영역 모드에서 드래그해 다시 지정할 수 있습니다.</small></div> : <p className="poster-scope-empty">전체 Atlas를 사용 중입니다. 지도에서 <b>Poster 영역</b>을 선택하면 원하는 장소만 추출할 수 있습니다.</p>}{hiddenIds.size > 0 && <p className="poster-hidden-note">숨긴 활동 {hiddenIds.size.toLocaleString("ko-KR")}개는 미리보기와 PNG에서 제외됩니다.</p>}<label>제목<input value={title} maxLength={36} onChange={(event) => setTitle(event.target.value)} /></label><div className="control-group"><span>테마</span><div>{(["night", "aurora", "paper"] as PosterTheme[]).map((item) => <button key={item} type="button" className={theme === item ? "active" : ""} onClick={() => setTheme(item)}>{item}</button>)}</div></div><div className="control-group"><span>비율</span><div>{(["16:9", "4:5", "9:16"] as PosterRatio[]).map((item) => <button key={item} type="button" className={ratio === item ? "active" : ""} onClick={() => setRatio(item)}>{item}</button>)}</div></div><div className="control-group poster-map-control"><span>지도 배경</span><div><button data-testid="poster-basemap-off" type="button" className={!showBaseMap ? "active" : ""} onClick={() => setShowBaseMap(false)}>경로만</button><button data-testid="poster-basemap-on" type="button" className={showBaseMap ? "active" : ""} onClick={() => setShowBaseMap(true)}>지도 포함</button></div><small>지도 포함은 현재 영역의 타일을 불러옵니다. 실패하면 경로 배경으로 자동 저장됩니다.</small></div><div className="control-group"><span>경로 색상</span><select value={colorMode} onChange={(event) => setColorMode(event.target.value as PosterColorMode)}><option value="memory">Memory Glow</option><option value="sport">Sport</option><option value="season">Season</option><option value="achievement">Achievement</option></select></div><p className="poster-size">{width.toLocaleString("ko-KR")} × {height.toLocaleString("ko-KR")} PNG · 비율 고정(왜곡 없음) · {scopedActivities.length.toLocaleString("ko-KR")}개 활동 · GPS/EXIF 없음</p><button data-testid="poster-download" className="primary-action" type="button" disabled={busy || !availableRoutes.length || !scopedActivities.length} onClick={download}>{busy ? (showBaseMap ? "지도와 경로 렌더링 중…" : "고해상도 렌더링 중…") : "고해상도 PNG 저장"}</button>{lastExport && <p className="poster-export-status" role="status">완료 · {lastExport}</p>}</div>
+    <div className="poster-controls">
+      <p className="eyebrow">POSTER STUDIO</p><h2>경험을 한 장으로 남기기</h2>
+      <div className="poster-scope">
+        <span>PNG에 포함할 활동</span>
+        <div>
+          {filterActive && <button data-testid="poster-scope-filter" type="button" aria-pressed={effectiveScope === "filter"} className={effectiveScope === "filter" ? "active" : ""} onClick={() => setScope("filter")}>Atlas 필터 · {filterVisibleCount}</button>}
+          {selection && <button data-testid="poster-scope-selection" type="button" aria-pressed={effectiveScope === "selection"} className={effectiveScope === "selection" ? "active" : ""} onClick={() => setScope("selection")}>선택 영역 · {selectionVisibleCount}</button>}
+          <button data-testid="poster-scope-all" type="button" aria-pressed={effectiveScope === "all"} className={effectiveScope === "all" ? "active" : ""} onClick={() => setScope("all")}>전체 기록 · {fullVisibleCount}</button>
+        </div>
+        <small data-testid="poster-scope-description">{scopeDescription}</small>
+      </div>
+      {hiddenIds.size > 0 && <p className="poster-hidden-note">숨긴 활동 {hiddenIds.size.toLocaleString("ko-KR")}개는 모든 범위의 미리보기와 PNG에서 제외됩니다.</p>}
+      <label>제목<input value={title} maxLength={36} onChange={(event) => setTitle(event.target.value)} /></label>
+      <div className="control-group"><span>테마</span><div>{(["night", "aurora", "paper"] as PosterTheme[]).map((item) => <button key={item} type="button" className={theme === item ? "active" : ""} onClick={() => setTheme(item)}>{item}</button>)}</div></div>
+      <div className="control-group"><span>비율</span><div>{(["16:9", "4:5", "9:16"] as PosterRatio[]).map((item) => <button key={item} type="button" className={ratio === item ? "active" : ""} onClick={() => setRatio(item)}>{item}</button>)}</div></div>
+      <div className="control-group poster-map-control"><span>지도 배경</span><div><button data-testid="poster-basemap-off" type="button" className={!showBaseMap ? "active" : ""} onClick={() => setShowBaseMap(false)}>경로만</button><button data-testid="poster-basemap-on" type="button" className={showBaseMap ? "active" : ""} onClick={() => setShowBaseMap(true)}>지도 포함</button></div><small>지도 포함은 현재 영역의 타일을 불러옵니다. 실패하면 경로 배경으로 자동 저장됩니다.</small></div>
+      <div className="control-group"><span>경로 색상</span><select value={colorMode} onChange={(event) => setColorMode(event.target.value as PosterColorMode)}><option value="memory">Memory Glow</option><option value="sport">Sport</option><option value="season">Season</option><option value="achievement">Achievement</option></select></div>
+      <p className="poster-size" data-testid="poster-size">{width.toLocaleString("ko-KR")} × {height.toLocaleString("ko-KR")} PNG · 비율 고정(왜곡 없음) · {scopedActivities.length.toLocaleString("ko-KR")}개 활동 · {availableRoutes.length.toLocaleString("ko-KR")}개 경로 · GPS/EXIF 없음</p>
+      <button data-testid="poster-download" className="primary-action" type="button" disabled={busy || !availableRoutes.length || !scopedActivities.length} onClick={download}>{busy ? (showBaseMap ? "지도와 경로 렌더링 중…" : "고해상도 렌더링 중…") : "고해상도 PNG 저장"}</button>
+      {lastExport && <p className="poster-export-status" role="status">완료 · {lastExport}</p>}
+    </div>
   </section>;
 }
 
-function MemoriesView({ summary, atlas, posterSelection, hiddenIds, onOpenMemory }: { summary: ImportSummary; atlas: AtlasModel; posterSelection: PosterSelection | null; hiddenIds: ReadonlySet<string>; onOpenMemory: (memory: MemoryCard) => void }) {
+function MemoriesView({ summary, atlas, posterSelection, hiddenIds, filteredActivities, filterActive, filterLabel, onOpenMemory }: { summary: ImportSummary; atlas: AtlasModel; posterSelection: PosterSelection | null; hiddenIds: ReadonlySet<string>; filteredActivities: Activity[]; filterActive: boolean; filterLabel: string; onOpenMemory: (memory: MemoryCard) => void }) {
   const collection = useMemo(() => buildMemories(summary, atlas), [summary, atlas]);
   return <section className="memories-view content-page">
     <header className="content-header"><p className="eyebrow">MEMORIES · LIVING ATLAS</p><h1>길은 사라져도<br /><em>경험은 지도가 됩니다.</em></h1><p>{summary.startDate} — {summary.endDate} · {collection.years.length}개의 해</p></header>
     <div className="season-summary"><div><span>총 거리</span><strong>{collection.totalDistance === null ? "측정 없음" : `${collection.totalDistance.toLocaleString("ko-KR", { maximumFractionDigits: 0 })} km`}</strong></div><div><span>총 획득 고도</span><strong>{collection.totalElevationGain === null ? "측정 없음" : `${collection.totalElevationGain.toLocaleString("ko-KR", { maximumFractionDigits: 0 })} m`}</strong><small>{collection.elevationActivityCount ? `${collection.elevationActivityCount.toLocaleString("ko-KR")}개 활동 측정값` : "원본 필드 없음"}</small></div><div><span>움직인 시간</span><strong>{collection.totalHours === null ? "측정 없음" : `${collection.totalHours.toLocaleString("ko-KR", { maximumFractionDigits: 0 })} h`}</strong></div><div><span>활동 일수</span><strong>{collection.activityDays.toLocaleString("ko-KR")} days</strong></div><div><span>경로 지역</span><strong>{atlas.placeClusters.length.toLocaleString("ko-KR")} places</strong></div></div>
     <div className="memory-grid">{collection.cards.map((memory, index) => <button key={memory.id} type="button" className={`memory-card kind-${memory.kind}`} onClick={() => onOpenMemory(memory)}><span>{memory.eyebrow}</span><b>{String(index + 1).padStart(2, "0")}</b><h2>{memory.title}</h2><p>{memory.description}</p><small>{memory.evidence} ↗</small></button>)}</div>
-    <PosterStudio summary={summary} routes={atlas.routes} achievementIds={atlas.achievements.map((item) => item.activityId)} selection={posterSelection} hiddenIds={hiddenIds} />
+    <PosterStudio summary={summary} routes={atlas.routes} achievementIds={atlas.achievements.map((item) => item.activityId)} selection={posterSelection} hiddenIds={hiddenIds} filteredActivities={filteredActivities} filterActive={filterActive} filterLabel={filterLabel} />
   </section>;
 }
 
@@ -482,6 +539,8 @@ export default function BodyWeatherApp() {
     (!rangeStart || activity.localDate >= rangeStart) && (!rangeEnd || activity.localDate <= rangeEnd) &&
     (activityGroup === "all" || classifyActivity(activity).group === activityGroup) &&
     (environment === "all" || classifyActivity(activity).environment === environment)) ?? [], [summary, rangeStart, rangeEnd, activityGroup, environment]);
+  const atlasFilterActive = Boolean(summary && (rangeStart !== summary.startDate || rangeEnd !== summary.endDate || activityGroup !== "all" || environment !== "all"));
+  const atlasFilterLabel = describeAtlasFilter(rangeStart, rangeEnd, activityGroup, environment);
   const selectRoute = useCallback((route: AtlasRouteFeature) => {
     setSelectedRoute(route);
     setSelectedAchievement(null);
@@ -546,9 +605,9 @@ export default function BodyWeatherApp() {
       <nav aria-label="주요 화면"><button aria-current={view === "atlas" ? "page" : undefined} className={view === "atlas" ? "active" : ""} onClick={() => setView("atlas")}>Atlas</button><button aria-current={view === "forecast" ? "page" : undefined} className={view === "forecast" ? "active" : ""} onClick={() => setView("forecast")}>Forecast</button><button aria-current={view === "memories" ? "page" : undefined} className={view === "memories" ? "active" : ""} onClick={() => setView("memories")}>Memories</button><button aria-current={view === "data" ? "page" : undefined} className={view === "data" ? "active" : ""} onClick={() => setView("data")}>Data & Privacy</button></nav>
       <button className="reset-button" type="button" onClick={() => { setSummary(null); setFullAtlas(buildAtlasModel([], true)); setAtlasState("idle"); setSelectedRoute(null); setSelectedAchievement(null); setFocusCoordinate(null); setHiddenIds(new Set()); setPosterSelection(null); }}>새 ZIP</button>
     </header>
-    {view === "atlas" && <AtlasView summary={summary} colorMode={colorMode} setColorMode={setColorMode} filteredActivities={filteredActivities} rangeStart={rangeStart} rangeEnd={rangeEnd} setRangeStart={setRangeStart} setRangeEnd={setRangeEnd} activityGroup={activityGroup} setActivityGroup={setActivityGroup} environment={environment} setEnvironment={setEnvironment} reveal={reveal} setReveal={setReveal} selectedRoute={selectedRoute} onRouteSelect={selectRoute} selectedAchievement={selectedAchievement} onAchievementSelect={selectAchievement} focusCoordinate={focusCoordinate} onOpenForecast={() => setView("forecast")} fullAtlas={fullAtlas} atlasState={atlasState} interactionMode={interactionMode} setInteractionMode={changeInteractionMode} hiddenIds={hiddenIds} onAreaSelection={handleAreaSelection} viewportBounds={viewportBounds} onViewportChange={setViewportBounds} posterSelection={posterSelection} onCaptureViewport={captureViewport} onClearHidden={() => setHiddenIds(new Set())} />}
+    {view === "atlas" && <AtlasView summary={summary} colorMode={colorMode} setColorMode={setColorMode} filteredActivities={filteredActivities} rangeStart={rangeStart} rangeEnd={rangeEnd} setRangeStart={setRangeStart} setRangeEnd={setRangeEnd} activityGroup={activityGroup} setActivityGroup={setActivityGroup} environment={environment} setEnvironment={setEnvironment} reveal={reveal} setReveal={setReveal} selectedRoute={selectedRoute} onRouteSelect={selectRoute} selectedAchievement={selectedAchievement} onAchievementSelect={selectAchievement} focusCoordinate={focusCoordinate} onOpenForecast={() => setView("forecast")} onOpenMemories={() => setView("memories")} fullAtlas={fullAtlas} atlasState={atlasState} interactionMode={interactionMode} setInteractionMode={changeInteractionMode} hiddenIds={hiddenIds} onAreaSelection={handleAreaSelection} viewportBounds={viewportBounds} onViewportChange={setViewportBounds} posterSelection={posterSelection} onCaptureViewport={captureViewport} onClearHidden={() => setHiddenIds(new Set())} />}
     {view === "forecast" && <ForecastView summary={summary} />}
-    {view === "memories" && <MemoriesView summary={summary} atlas={fullAtlas} posterSelection={posterSelection} hiddenIds={hiddenIds} onOpenMemory={openMemory} />}
+    {view === "memories" && <MemoriesView summary={summary} atlas={fullAtlas} posterSelection={posterSelection} hiddenIds={hiddenIds} filteredActivities={filteredActivities} filterActive={atlasFilterActive} filterLabel={atlasFilterLabel} onOpenMemory={openMemory} />}
     {view === "data" && <DataView summary={summary} atlas={fullAtlas} />}
     {selectedRoute && <ActivityDrawer route={selectedRoute} relatedRoutes={relatedRoutes} achievement={selectedAchievement?.activityId === selectedRoute.id ? selectedAchievement : null} onSelect={selectRoute} onClose={() => { setSelectedRoute(null); setSelectedAchievement(null); }} />}
   </main>;

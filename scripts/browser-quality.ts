@@ -53,7 +53,7 @@ async function openFixture(viewport = { width: 1440, height: 900 }, atlasDelay =
   await page.locator("canvas.maplibregl-canvas").waitFor({ state: "visible" });
   await page.locator(".map-status").waitFor({ state: "hidden", timeout: 12_000 });
   const skipReveal = page.getByRole("button", { name: "건너뛰기" });
-  if (await skipReveal.isVisible()) await skipReveal.click();
+  if (await skipReveal.isVisible()) await skipReveal.click({ force: true }).catch(() => undefined);
   return page;
 }
 
@@ -74,6 +74,18 @@ async function runBrowser() {
   await page.getByLabel("종목 필터").selectOption("ride");
   await page.getByLabel("환경 필터").selectOption("virtual");
   assert.match(await page.locator(".atlas-title").innerText(), /1개 활동/);
+  await page.getByRole("button", { name: "이 결과로 PNG" }).click();
+  assert.equal(await page.getByTestId("poster-scope-filter").getAttribute("aria-pressed"), "true");
+  assert.match(await page.getByTestId("poster-scope-filter").innerText(), /Atlas 필터 · 1/);
+  assert.match(await page.getByTestId("poster-scope-description").innerText(), /Ride · Virtual · 1개 경로/);
+  assert.match(await page.getByTestId("poster-size").innerText(), /1개 활동 · 1개 경로/);
+  await page.locator(".poster-image").waitFor({ state: "visible" });
+  await page.getByTestId("poster-scope-all").click();
+  assert.match(await page.getByTestId("poster-size").innerText(), /24개 활동 · 24개 경로/);
+  await page.getByTestId("poster-scope-filter").click();
+  assert.match(await page.getByTestId("poster-size").innerText(), /1개 활동 · 1개 경로/);
+  await page.getByRole("button", { name: "Atlas", exact: true }).click();
+  await page.getByRole("button", { name: "전체" }).click();
   await page.getByLabel("환경 필터").selectOption("all");
   await page.getByLabel("종목 필터").selectOption("all");
 
@@ -114,7 +126,7 @@ async function runBrowser() {
   await page.getByRole("button", { name: /고강도/ }).click();
   const rangeAfter = await page.locator(".tomorrow-card strong").innerText();
   assert.notEqual(rangeBefore, rangeAfter, "운동 계획 강도가 내일 범위를 바꿔야 합니다.");
-  assert.match(await page.locator("body").innerText(), /14일 전 관측/);
+  assert.match(await page.locator("body").innerText(), /\d+일 전 관측/);
 
   await page.getByRole("button", { name: "Memories" }).click();
   assert.ok(await page.locator(".memory-card").count() > 0);

@@ -140,8 +140,12 @@ export function posterDimensions(ratio: PosterRatio, preview = false): [number, 
   return dimensions(ratio, preview);
 }
 
-export function filterPosterRoutes(routes: AtlasRouteFeature[], hiddenIds: ReadonlySet<string>): AtlasRouteFeature[] {
-  return routes.filter((route) => !hiddenIds.has(route.id));
+export function filterPosterRoutes(
+  routes: AtlasRouteFeature[],
+  hiddenIds: ReadonlySet<string>,
+  allowedIds?: ReadonlySet<string> | null,
+): AtlasRouteFeature[] {
+  return routes.filter((route) => !hiddenIds.has(route.id) && (!allowedIds || allowedIds.has(route.id)));
 }
 
 export async function renderPoster(
