@@ -39,13 +39,23 @@ Atlas Premiere는 Experience Atlas의 경로를 시간순으로 재구성해 오
 - 기본·최소·최대 배율을 Camera Lab에서 재생 전과 재생 중 모두 변경할 수 있다. 모든 값은 지도 엔진의 안전 범위에서 정규화한다.
 - Memory Jump의 여행자와 잔상은 직선 보간이 아니라 화면에 표시된 Great-circle Arc의 경도·위도·고도를 그대로 따라간다.
 - Memory Montage는 지금까지 공개된 모든 경로의 누적 Bounds를 배속에 맞춘 간격으로 다시 계산한다. 빠르게 경로를 채우는 동안 카메라는 최대 10.5 Zoom까지 단계적으로 Zoom Out하며 새 경로가 화면 밖에서 나타나는 상황을 막는다. 고배속일수록 카메라 전환도 짧아지고, 다음 Activity Follow가 시작되면 선택한 추적 카메라로 자연스럽게 복귀한다. Free Look 중에는 자동 카메라를 덮어쓰지 않는다.
+- Activity Follow 여행자는 GPS 점의 배열 인덱스를 건너뛰지 않고 경로의 누적 실제 거리를 기준으로 현재 선분 안을 보간한다. 점 간격이 큰 경로에서도 여행자·Recovery Aura·Echo Rider가 같은 연속 위치를 사용하며 짧은 화면 전환으로 프레임 사이를 완충한다.
 - 기본 방향 Follow 값은 `55% 방향 반영`, `1.2초 완충`, `55°/s`, `65% 배속 보정`이며 실제 데이터 피드백으로 조정 가능하다.
+
+## 재생 성능 예산
+
+- Premiere의 고빈도 재생 상태는 지도·HUD 전용 Stage 안에서만 갱신해 Forecast, 필터, 전체 Atlas UI의 불필요한 재렌더를 막는다.
+- React/Deck 상태 전달은 최대 30fps로 제한하되 실제 Playhead 시간은 매 Animation Frame 누적해 재생 길이와 배속은 유지한다.
+- Route ID 조회와 성과 조회는 재생마다 배열을 검색하지 않고 메모화된 Index를 사용한다.
+- 지도 LOD 좌표와 거리 누적값은 Route 객체별 WeakMap에 캐시하고, 같은 경로를 매 프레임 다시 단순화하거나 측정하지 않는다.
+- 카메라 애니메이션 중 연속 `zoom` 이벤트로 전체 경로 Layer를 재구축하지 않는다. Zoom 종료 시에만 LOD를 변경하고 Premiere 중 Viewport 상태 동기화는 생략한다.
 
 ## 검증 게이트
 
 - [x] Story engine 단위 테스트: 시간순 공개, 전체 경로 포함, 하이라이트 상한, Memory Jump 비경로성, Full Chronicle 전체 Follow, measured recovery, 빈 입력.
 - [x] Camera Lab 단위 테스트: Custom 배속 경계, Zoom 정규화, 최단 방향 회전, 최대 회전속도, 고배속 완충, Arc 고도 일치.
 - [x] Montage 카메라 단위 테스트: 공개된 경로 전체를 누적 Framing 대상으로 유지하고 입력 경계를 안전하게 제한.
+- [x] Traveler 보간 단위 테스트: 희소한 GPS 선분의 거리 기반 보간, 시작·종료 Clamp, 원본 좌표 불변성.
 - [x] 정적 검사: ESLint 및 TypeScript.
 - [x] 프로덕션 빌드.
 - [x] 데스크톱 실브라우저: 설정, 재생, Activity Card, Memory Jump, Free Look/복귀, Finale, PNG 연결, 콘솔 오류 확인.

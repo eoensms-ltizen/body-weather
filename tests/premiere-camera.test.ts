@@ -4,8 +4,10 @@ import {
   clampPremiereSpeed,
   DEFAULT_PREMIERE_CAMERA_TUNING,
   greatCircleArcPoint,
+  measurePremierePath,
   normalizePremiereCameraTuning,
   premiereMontageCameraRouteIds,
+  samplePremierePath,
   shortestBearingDelta,
   smoothPremiereBearing,
 } from "../lib/premiere-camera";
@@ -23,6 +25,26 @@ test("Montage camera keeps every route revealed so far in its framing set", () =
   assert.deepEqual(premiereMontageCameraRouteIds(orderedRouteIds, 99), orderedRouteIds);
   assert.deepEqual(premiereMontageCameraRouteIds(orderedRouteIds, -1), []);
   assert.deepEqual(orderedRouteIds, ["morning", "river", "mountain", "night"]);
+});
+
+test("Traveler advances by route distance and interpolates inside sparse segments", () => {
+  const measured = measurePremierePath([[127, 37], [127.001, 37], [127.011, 37]]);
+  assert.ok(measured);
+  const quarter = samplePremierePath(measured, 0.25);
+  const half = samplePremierePath(measured, 0.5);
+  assert.equal(quarter.segmentIndex, 1);
+  assert.equal(half.segmentIndex, 1);
+  assert.ok(quarter.point[0] > 127.001 && quarter.point[0] < half.point[0]);
+  assert.ok(half.point[0] < 127.011);
+});
+
+test("Traveler sampling clamps endpoints without mutating source coordinates", () => {
+  const source: Array<[number, number]> = [[126.9, 37.4], [127.2, 37.7]];
+  const measured = measurePremierePath(source);
+  assert.ok(measured);
+  assert.deepEqual(samplePremierePath(measured, -1).point, source[0]);
+  assert.deepEqual(samplePremierePath(measured, 2).point, source[1]);
+  assert.deepEqual(source, [[126.9, 37.4], [127.2, 37.7]]);
 });
 
 test("Camera tuning keeps follow zoom inside a coherent min/max range", () => {

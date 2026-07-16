@@ -225,6 +225,67 @@ function ActivityDrawer({ route, relatedRoutes, achievement, onSelect, onClose }
   </aside>;
 }
 
+function AtlasPremiereStage({
+  premiereOpen,
+  onPremiereClose,
+  mapRoutes,
+  mapBounds,
+  allRoutes,
+  filteredPremiereRoutes,
+  achievements,
+  placeClusters,
+  wellness,
+  colorMode,
+  selectedRoute,
+  focusCoordinate,
+  onRouteSelect,
+  interactionMode,
+  hiddenIds,
+  selectedAchievement,
+  onAchievementSelect,
+  onAreaSelection,
+  onViewportChange,
+  filterActive,
+  filterLabel,
+  onOpenPoster,
+}: {
+  premiereOpen: boolean;
+  onPremiereClose: () => void;
+  mapRoutes: AtlasRouteFeature[];
+  mapBounds: RouteBounds | null;
+  allRoutes: AtlasRouteFeature[];
+  filteredPremiereRoutes: AtlasRouteFeature[];
+  achievements: Achievement[];
+  placeClusters: AtlasModel["placeClusters"];
+  wellness: ImportSummary["wellness"];
+  colorMode: AtlasColorMode;
+  selectedRoute: AtlasRouteFeature | null;
+  focusCoordinate: [number, number] | null;
+  onRouteSelect: (route: AtlasRouteFeature) => void;
+  interactionMode: AtlasInteractionMode;
+  hiddenIds: ReadonlySet<string>;
+  selectedAchievement: Achievement | null;
+  onAchievementSelect: (achievement: Achievement) => void;
+  onAreaSelection: (bounds: RouteBounds, routeIds: string[]) => void;
+  onViewportChange: (bounds: RouteBounds) => void;
+  filterActive: boolean;
+  filterLabel: string;
+  onOpenPoster: () => void;
+}) {
+  const [premiereMapState, setPremiereMapState] = useState<PremiereMapState | null>(null);
+  const [premiereFreeLook, setPremiereFreeLook] = useState(false);
+  const closePremiere = useCallback(() => {
+    setPremiereMapState(null);
+    setPremiereFreeLook(false);
+    onPremiereClose();
+  }, [onPremiereClose]);
+
+  return <>
+    <Suspense fallback={<div className="route-empty"><span>ATLAS ENGINE</span><h2>지도 화면을 준비하는 중</h2></div>}><AtlasMap routes={premiereMapState ? allRoutes : mapRoutes} bounds={mapBounds} achievements={achievements} placeClusters={placeClusters} colorMode={colorMode} selectedId={selectedRoute?.id} focusCoordinate={premiereMapState ? null : focusCoordinate} onSelect={onRouteSelect} interactionMode={premiereMapState ? "navigate" : interactionMode} hiddenIds={hiddenIds} selectedAchievementId={selectedAchievement?.id} onAchievementSelect={onAchievementSelect} onAreaSelection={onAreaSelection} onViewportChange={onViewportChange} premiere={premiereMapState} onUserMapInteraction={() => premiereMapState && setPremiereFreeLook(true)} /></Suspense>
+    {premiereOpen && <AtlasPremiere open filteredRoutes={filteredPremiereRoutes} allRoutes={allRoutes} achievements={achievements} placeClusters={placeClusters} wellness={wellness} filterActive={filterActive} filterLabel={filterLabel} freeLook={premiereFreeLook} onFreeLookChange={setPremiereFreeLook} onMapState={setPremiereMapState} onClose={closePremiere} onOpenPoster={onOpenPoster} />}
+  </>;
+}
+
 function AtlasView({
   summary,
   colorMode,
@@ -293,8 +354,6 @@ function AtlasView({
   onClearHidden: () => void;
 }) {
   const [premiereOpen, setPremiereOpen] = useState(false);
-  const [premiereMapState, setPremiereMapState] = useState<PremiereMapState | null>(null);
-  const [premiereFreeLook, setPremiereFreeLook] = useState(false);
   const displayedActivities = useMemo(() => interactionMode === "hide" ? filteredActivities : filteredActivities.filter((activity) => !hiddenIds.has(activity.id)), [filteredActivities, hiddenIds, interactionMode]);
   const filteredAtlas = useMemo(() => displayedActivities.length === summary.activities.length ? fullAtlas : subsetAtlasModel(fullAtlas, displayedActivities), [displayedActivities, summary.activities.length, fullAtlas]);
   const premiereFilteredActivities = useMemo(() => filteredActivities.filter((activity) => !hiddenIds.has(activity.id)), [filteredActivities, hiddenIds]);
@@ -309,8 +368,8 @@ function AtlasView({
   const threeMonthsBefore = new Date(`${summary.endDate}T12:00:00`); threeMonthsBefore.setMonth(threeMonthsBefore.getMonth() - 3);
   const lastYear = summary.endDate.slice(0, 4);
 
-  return <section className={`atlas-view mode-${interactionMode}${premiereMapState ? " premiere-running" : ""}`}>
-    {atlasState === "building" ? <div className="atlas-processing" role="status" aria-live="polite"><div className="processing-orbit"><i /><i /><i /></div><span>ATLAS ENGINE · BUILDING</span><h2>경로를 지도 위에<br />펼치는 중입니다.</h2><p>{summary.activities.length.toLocaleString("ko-KR")}개 활동의 좌표 정리, 민감 위치 마스킹, 지도 최적화를 처리하고 있습니다.</p><small>이 단계가 끝난 뒤에만 GPS 경로 유무를 확정합니다.</small></div> : filteredAtlas.routes.length ? <Suspense fallback={<div className="route-empty"><span>ATLAS ENGINE</span><h2>지도 화면을 준비하는 중</h2></div>}><AtlasMap routes={premiereMapState ? allVisibleRoutes : shownRoutes} bounds={shownBounds} achievements={fullAtlas.achievements} placeClusters={fullAtlas.placeClusters} colorMode={colorMode} selectedId={selectedRoute?.id} focusCoordinate={premiereMapState ? null : focusCoordinate} onSelect={onRouteSelect} interactionMode={premiereMapState ? "navigate" : interactionMode} hiddenIds={hiddenIds} selectedAchievementId={selectedAchievement?.id} onAchievementSelect={onAchievementSelect} onAreaSelection={onAreaSelection} onViewportChange={onViewportChange} premiere={premiereMapState} onUserMapInteraction={() => premiereMapState && setPremiereFreeLook(true)} /></Suspense> : <div className="route-empty"><span>NO GPS TRACE · CONFIRMED</span><h2>경로 좌표 없이도<br />시간은 남아 있습니다.</h2><p>경로 처리를 완료했지만 지도에 그릴 좌표가 없었습니다. 활동 날짜와 거리, 회복 기록으로 Forecast와 Memories를 구성했습니다.</p></div>}
+  return <section className={`atlas-view mode-${interactionMode}${premiereOpen ? " premiere-running" : ""}`}>
+    {atlasState === "building" ? <div className="atlas-processing" role="status" aria-live="polite"><div className="processing-orbit"><i /><i /><i /></div><span>ATLAS ENGINE · BUILDING</span><h2>경로를 지도 위에<br />펼치는 중입니다.</h2><p>{summary.activities.length.toLocaleString("ko-KR")}개 활동의 좌표 정리, 민감 위치 마스킹, 지도 최적화를 처리하고 있습니다.</p><small>이 단계가 끝난 뒤에만 GPS 경로 유무를 확정합니다.</small></div> : filteredAtlas.routes.length ? <AtlasPremiereStage premiereOpen={premiereOpen} onPremiereClose={() => setPremiereOpen(false)} mapRoutes={shownRoutes} mapBounds={shownBounds} allRoutes={allVisibleRoutes} filteredPremiereRoutes={premiereFilteredAtlas.routes} achievements={fullAtlas.achievements} placeClusters={fullAtlas.placeClusters} wellness={summary.wellness} colorMode={colorMode} selectedRoute={selectedRoute} focusCoordinate={focusCoordinate} onRouteSelect={onRouteSelect} interactionMode={interactionMode} hiddenIds={hiddenIds} selectedAchievement={selectedAchievement} onAchievementSelect={onAchievementSelect} onAreaSelection={onAreaSelection} onViewportChange={onViewportChange} filterActive={filterActive} filterLabel={filterLabel} onOpenPoster={onOpenMemories} /> : <div className="route-empty"><span>NO GPS TRACE · CONFIRMED</span><h2>경로 좌표 없이도<br />시간은 남아 있습니다.</h2><p>경로 처리를 완료했지만 지도에 그릴 좌표가 없었습니다. 활동 날짜와 거리, 회복 기록으로 Forecast와 Memories를 구성했습니다.</p></div>}
     <div className="atlas-title"><p className="eyebrow">AURORA EXPERIENCE FIELD</p><h1>{summary.startDate.slice(0, 4)} — {summary.endDate.slice(0, 4)}</h1><p>{displayedActivities.length.toLocaleString("ko-KR")}개 활동 · {filteredAtlas.routeActivityCount.toLocaleString("ko-KR")}개 경로 · {filteredAtlas.placeClusters.length.toLocaleString("ko-KR")}개 지역 경험{hiddenIds.size ? ` · ${hiddenIds.size}개 숨김` : ""}</p></div>
     <button type="button" className={`forecast-peek weather-${latestForecast.weatherState.replace(" ", "-")}`} onClick={onOpenForecast}>
       <span className="forecast-orb" aria-hidden="true"><b>{latestForecast.score ?? "—"}</b><i /></span>
@@ -347,7 +406,6 @@ function AtlasView({
     </div>
     {reveal < 1 && <div className="reveal-panel" role="status"><div><span style={{ width: `${Math.round(reveal * 100)}%` }} /></div><p>당신의 경로가 시간 위로 떠오르는 중 · {Math.round(reveal * 100)}%</p><button type="button" onClick={() => setReveal(1)}>건너뛰기</button></div>}
     <div className="map-legend"><span><i className="source" />선택 가능한 원본 성과</span><span><i className="derived" />Atlas 개인기록</span><b>{filteredAtlas.privacyZones.length ? `민감 위치 ${filteredAtlas.privacyZones.length}곳 마스킹` : "민감 위치 후보 없음"}</b></div>
-    {premiereOpen && <AtlasPremiere open filteredRoutes={premiereFilteredAtlas.routes} allRoutes={allVisibleRoutes} achievements={fullAtlas.achievements} placeClusters={fullAtlas.placeClusters} wellness={summary.wellness} filterActive={filterActive} filterLabel={filterLabel} freeLook={premiereFreeLook} onFreeLookChange={setPremiereFreeLook} onMapState={setPremiereMapState} onClose={() => { setPremiereOpen(false); setPremiereMapState(null); setPremiereFreeLook(false); }} onOpenPoster={onOpenMemories} />}
   </section>;
 }
 

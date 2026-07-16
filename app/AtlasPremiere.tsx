@@ -8,6 +8,7 @@ import type { Achievement, AtlasRouteFeature, DailyWellness, PlaceCluster } from
 type PremiereStatus = "setup" | "playing" | "paused" | "complete";
 type PremiereScope = "filter" | "all";
 const SPEED_PRESETS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4, 8] as const;
+const PREMIERE_RENDER_INTERVAL_MS = 1_000 / 30;
 
 function durationLabel(milliseconds: number): string {
   const totalSeconds = Math.max(0, Math.round(milliseconds / 1000));
@@ -103,6 +104,7 @@ export default function AtlasPremiere({
   const [playheadMs, setPlayheadMs] = useState(0);
   const playheadRef = useRef(0);
   const previousTimestampRef = useRef(0);
+  const previousRenderTimestampRef = useRef(0);
   const reducedMotion = typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   const routes = scope === "filter" && filterActive ? filteredRoutes : allRoutes;
   const settings = useMemo<PremiereSettings>(() => ({ length, cameraMode, showActivityCard, showRecords, showSeason, showRecovery }), [cameraMode, length, showActivityCard, showRecords, showRecovery, showSeason]);
@@ -124,13 +126,17 @@ export default function AtlasPremiere({
     if (!open || status !== "playing" || !story) return;
     let animationFrame = 0;
     previousTimestampRef.current = 0;
+    previousRenderTimestampRef.current = 0;
     const tick = (timestamp: number) => {
       if (!previousTimestampRef.current) previousTimestampRef.current = timestamp;
       const elapsed = Math.min(100, timestamp - previousTimestampRef.current) * speed;
       previousTimestampRef.current = timestamp;
       const next = Math.min(story.totalDurationMs, playheadRef.current + elapsed);
       playheadRef.current = next;
-      setPlayheadMs(next);
+      if (!previousRenderTimestampRef.current || timestamp - previousRenderTimestampRef.current >= PREMIERE_RENDER_INTERVAL_MS || next >= story.totalDurationMs) {
+        previousRenderTimestampRef.current = timestamp;
+        setPlayheadMs(next);
+      }
       if (next >= story.totalDurationMs) {
         setStatus("complete");
         return;

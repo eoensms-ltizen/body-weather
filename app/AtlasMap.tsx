@@ -7,7 +7,7 @@ import { MapboxOverlay } from "@deck.gl/mapbox";
 import maplibregl, { type StyleSpecification } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { mergeBounds, routePointsForZoom, routesInBounds } from "@/lib/atlas";
-import { greatCircleArcPoint, premiereMontageCameraRouteIds, smoothPremiereBearing } from "@/lib/premiere-camera";
+import { greatCircleArcPoint, measurePremierePath, premiereMontageCameraRouteIds, samplePremierePath, smoothPremiereBearing, type PremiereMeasuredPath } from "@/lib/premiere-camera";
 import type { PremiereMapState, PremiereSeason } from "@/lib/premiere";
 import type { Achievement, AtlasRouteFeature, PlaceCluster, RouteBounds } from "@/lib/types";
 
@@ -82,9 +82,30 @@ function seasonAurora(season: PremiereSeason | undefined): [number, number, numb
   return [91, 239, 215, 245];
 }
 
-function pointAtProgress(points: [number, number][], progress: number): { point: [number, number]; index: number } {
-  const index = Math.max(0, Math.min(points.length - 1, Math.round(progress * (points.length - 1))));
-  return { point: points[index], index };
+type RoutePathLod = "low" | "medium" | "high";
+interface CachedRoutePath { points: [number, number][]; measured?: PremiereMeasuredPath | null; }
+type RoutePathCache = Partial<Record<RoutePathLod, CachedRoutePath>>;
+interface RenderedAtlasRoute { route: AtlasRouteFeature; renderPath: [number, number][]; }
+
+function routePathLod(zoom: number): RoutePathLod {
+  return zoom < 7 ? "low" : zoom < 11 ? "medium" : "high";
+}
+
+function cachedRoutePath(cache: WeakMap<AtlasRouteFeature, RoutePathCache>, route: AtlasRouteFeature, zoom: number): CachedRoutePath {
+  const lod = routePathLod(zoom);
+  const cached = cache.get(route) ?? {};
+  const existing = cached[lod];
+  if (existing) return existing;
+  const path = { points: routePointsForZoom(route, zoom).map((point) => [point.longitude, point.latitude] as [number, number]) };
+  cached[lod] = path;
+  cache.set(route, cached);
+  return path;
+}
+
+function measuredRoutePath(cache: WeakMap<AtlasRouteFeature, RoutePathCache>, route: AtlasRouteFeature, zoom: number): PremiereMeasuredPath | null {
+  const cached = cachedRoutePath(cache, route, zoom);
+  if (cached.measured === undefined) cached.measured = measurePremierePath(cached.points);
+  return cached.measured;
 }
 
 function easeInOut(progress: number): number {
@@ -148,6 +169,7 @@ export default function AtlasMap({
   const onUserMapInteractionRef = useRef(onUserMapInteraction);
   const premiereRef = useRef(premiere);
   const routesRef = useRef(routes);
+  const routePathCacheRef = useRef<WeakMap<AtlasRouteFeature, RoutePathCache>>(new WeakMap());
   const lastPremiereCameraRef = useRef(0);
   const lastPremiereMontageCameraRef = useRef(0);
   const lastPremiereMontageCountRef = useRef(-1);
@@ -158,6 +180,8 @@ export default function AtlasMap({
   const [mapState, setMapState] = useState<"loading" | "ready" | "backup" | "fallback">("loading");
   const [dragBox, setDragBox] = useState<{ startX: number; startY: number; x: number; y: number } | null>(null);
   const achievementIds = useMemo(() => new Set(achievements.map((item) => item.activityId)), [achievements]);
+  const routeById = useMemo(() => new Map(routes.map((route) => [route.id, route])), [routes]);
+  const achievementById = useMemo(() => new Map(achievements.map((achievement) => [achievement.id, achievement])), [achievements]);
 
   useEffect(() => {
     onSelectRef.current = onSelect;
@@ -239,8 +263,12 @@ export default function AtlasMap({
       window.clearTimeout(loadTimer);
       setMapState(styleIndex === 0 ? "ready" : "backup");
     });
-    map.on("zoom", () => setZoom(map.getZoom()));
+    map.on("zoomend", () => {
+      const nextZoom = map.getZoom();
+      setZoom((currentZoom) => routePathLod(currentZoom) === routePathLod(nextZoom) ? currentZoom : nextZoom);
+    });
     map.on("moveend", () => {
+      if (premiereRef.current) return;
       const current = map.getBounds();
       onViewportChangeRef.current({ west: current.getWest(), south: current.getSouth(), east: current.getEast(), north: current.getNorth() });
     });
@@ -289,16 +317,24 @@ export default function AtlasMap({
     const overlay = overlayRef.current;
     if (!overlay) return;
     const revealedIds = new Set(premiereOrderedIds?.slice(0, premiereRevealedCount) ?? []);
-    const sourceRoutes = premiereActive ? routes.filter((route) => revealedIds.has(route.id)) : routes;
-    const visibleRoutes = sourceRoutes.map((route) => ({ ...route, renderPath: routePointsForZoom(route, zoom).map((point) => [point.longitude, point.latitude]) as [number, number][] }));
+    const sourceRoutes = premiereActive
+      ? (premiereOrderedIds ?? []).slice(0, premiereRevealedCount).flatMap((id) => {
+        const route = routeById.get(id);
+        return route ? [route] : [];
+      })
+      : routes;
+    const visibleRoutes = sourceRoutes.flatMap((route): RenderedAtlasRoute[] => {
+      const cached = cachedRoutePath(routePathCacheRef.current, route, zoom);
+      return cached.points.length >= 2 ? [{ route, renderPath: cached.points }] : [];
+    });
     const activeId = premiereActive ? premiereRouteId : selectedId;
-    const colors = (route: (typeof visibleRoutes)[number]) => routeColor(route, colorMode, achievementIds, hiddenIds.has(route.id));
+    const colors = (item: RenderedAtlasRoute) => routeColor(item.route, colorMode, achievementIds, hiddenIds.has(item.route.id));
     const halo = new PathLayer({
       id: "atlas-route-halo",
       data: visibleRoutes,
-      getPath: (route) => route.renderPath,
-      getColor: (route) => { const [r, g, b] = colors(route); return [r, g, b, route.id === activeId ? 185 : colorMode === "memory" ? 72 : 58]; },
-      getWidth: (route) => route.id === activeId ? 16 : colorMode === "memory" ? 8.5 : 5.5,
+      getPath: (item) => item.renderPath,
+      getColor: (item) => { const [r, g, b] = colors(item); return [r, g, b, item.route.id === activeId ? 185 : colorMode === "memory" ? 72 : 58]; },
+      getWidth: (item) => item.route.id === activeId ? 16 : colorMode === "memory" ? 8.5 : 5.5,
       widthUnits: "pixels",
       capRounded: true,
       jointRounded: true,
@@ -308,9 +344,9 @@ export default function AtlasMap({
     const core = new PathLayer({
       id: "atlas-route-core",
       data: visibleRoutes,
-      getPath: (route) => route.renderPath,
+      getPath: (item) => item.renderPath,
       getColor: colors,
-      getWidth: (route) => route.id === activeId ? 4.2 : colorMode === "memory" ? 1.9 : 1.7,
+      getWidth: (item) => item.route.id === activeId ? 4.2 : colorMode === "memory" ? 1.9 : 1.7,
       widthUnits: "pixels",
       widthMinPixels: 1,
       capRounded: true,
@@ -318,21 +354,21 @@ export default function AtlasMap({
       pickable: !premiereActive,
       autoHighlight: true,
       highlightColor: [255, 255, 255, 110],
-      onClick: (info: PickingInfo<(typeof visibleRoutes)[number]>) => info.object && onSelectRef.current(info.object),
+      onClick: (info: PickingInfo<RenderedAtlasRoute>) => info.object && onSelectRef.current(info.object.route),
       parameters: { depthWriteEnabled: false },
     });
     const hitArea = new PathLayer({
       id: "atlas-route-hit-area",
       data: visibleRoutes,
-      getPath: (route) => route.renderPath,
+      getPath: (item) => item.renderPath,
       getColor: [255, 255, 255, 0],
-      getWidth: (route) => route.id === activeId ? 22 : 14,
+      getWidth: (item) => item.route.id === activeId ? 22 : 14,
       widthUnits: "pixels",
       widthMinPixels: 12,
       capRounded: true,
       jointRounded: true,
       pickable: !premiereActive,
-      onClick: (info: PickingInfo<(typeof visibleRoutes)[number]>) => info.object && onSelectRef.current(info.object),
+      onClick: (info: PickingInfo<RenderedAtlasRoute>) => info.object && onSelectRef.current(info.object.route),
       parameters: { depthWriteEnabled: false },
     });
     const locatedAchievements = achievements.filter((item) => item.coordinate && (!premiereActive || premiereShowRecords && revealedIds.has(item.activityId)));
@@ -382,7 +418,7 @@ export default function AtlasMap({
       characterSet: ["이", " ", "지", "역", "·", "회", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"],
     });
     overlay.setProps({ layers: [halo, core, hitArea, achievementGlow, achievementText, clusterText] });
-  }, [routes, achievements, placeClusters, zoom, colorMode, selectedId, achievementIds, hiddenIds, selectedAchievementId, premiereActive, premiereOrderedIds, premiereRevealedCount, premiereRouteId, premiereShowRecords]);
+  }, [routes, routeById, achievements, placeClusters, zoom, colorMode, selectedId, achievementIds, hiddenIds, selectedAchievementId, premiereActive, premiereOrderedIds, premiereRevealedCount, premiereRouteId, premiereShowRecords]);
 
   useEffect(() => {
     const overlay = flowOverlayRef.current;
@@ -390,20 +426,21 @@ export default function AtlasMap({
 
     if (premiere) {
       const frame = premiere.frame;
-      const routeById = new Map(routes.map((route) => [route.id, route]));
       if (frame.kind === "ride" && frame.routeId) {
         const activeRoute = routeById.get(frame.routeId);
         if (!activeRoute) {
           overlay.setProps({ layers: [] });
           return;
         }
-        const points = routePointsForZoom(activeRoute, Math.max(zoom, 9)).map((point) => [point.longitude, point.latitude] as [number, number]);
-        if (points.length < 2) {
+        const measured = measuredRoutePath(routePathCacheRef.current, activeRoute, Math.max(zoom, 9));
+        if (!measured) {
           overlay.setProps({ layers: [] });
           return;
         }
-        const traveler = pointAtProgress(points, frame.progress);
-        const partialPath = points.slice(0, Math.max(2, traveler.index + 1));
+        const traveler = samplePremierePath(measured, frame.progress);
+        const partialPath = [...measured.points.slice(0, traveler.segmentIndex + 1), traveler.point];
+        if (partialPath.length < 2) partialPath.push(traveler.point);
+        const positionTransition = { getPosition: { duration: Math.max(34, Math.min(110, 95 / Math.sqrt(Math.max(0.1, premiere.playbackSpeed)))), easing: (value: number) => 1 - Math.pow(1 - value, 3) } };
         const aurora = seasonAurora(premiere.showSeason ? frame.rideMeta?.season : undefined);
         const recoveryScore = premiere.showRecovery ? frame.rideMeta?.recoveryScore : null;
         const recoveryColor: [number, number, number, number] = recoveryScore === null || recoveryScore === undefined
@@ -412,11 +449,11 @@ export default function AtlasMap({
         const echoPositions = (frame.rideMeta?.echoRouteIds ?? []).flatMap((id, echoIndex) => {
           const route = routeById.get(id);
           if (!route) return [];
-          const echoPoints = routePointsForZoom(route, Math.max(zoom, 9)).map((point) => [point.longitude, point.latitude] as [number, number]);
-          if (echoPoints.length < 2) return [];
-          return [{ position: pointAtProgress(echoPoints, frame.progress).point, echoIndex }];
+          const echoPath = measuredRoutePath(routePathCacheRef.current, route, Math.max(zoom, 9));
+          if (!echoPath) return [];
+          return [{ position: samplePremierePath(echoPath, frame.progress).point, echoIndex }];
         });
-        const achievement = frame.rideMeta?.achievementId ? achievements.find((item) => item.id === frame.rideMeta?.achievementId) : undefined;
+        const achievement = frame.rideMeta?.achievementId ? achievementById.get(frame.rideMeta.achievementId) : undefined;
         const recordPosition = achievement?.coordinate ?? activeRoute.centroid;
         const showRecord = Boolean(premiere.showRecords && achievement && frame.progress >= 0.55);
         const showTerritory = Boolean(frame.rideMeta?.firstVisit && frame.progress <= 0.42);
@@ -453,6 +490,7 @@ export default function AtlasMap({
             stroked: true,
             getLineColor: [recoveryColor[0], recoveryColor[1], recoveryColor[2], 120],
             lineWidthMinPixels: 1,
+            transitions: positionTransition,
             parameters: { depthWriteEnabled: false },
           }),
           new ScatterplotLayer({
@@ -465,6 +503,7 @@ export default function AtlasMap({
             stroked: true,
             getLineColor: [184, 167, 255, 125],
             lineWidthMinPixels: 1,
+            transitions: positionTransition,
             parameters: { depthWriteEnabled: false },
           }),
           new ScatterplotLayer({
@@ -477,6 +516,7 @@ export default function AtlasMap({
             stroked: true,
             getLineColor: aurora,
             lineWidthMinPixels: 3,
+            transitions: positionTransition,
             parameters: { depthWriteEnabled: false },
           }),
           new ScatterplotLayer({
@@ -660,7 +700,7 @@ export default function AtlasMap({
       window.cancelAnimationFrame(frame);
       overlay.setProps({ layers: [] });
     };
-  }, [routes, selectedId, zoom, premiere, achievements]);
+  }, [routes, routeById, achievementById, selectedId, zoom, premiere]);
 
   const premiereSceneId = premiere?.frame.sceneId;
   const premiereKind = premiere?.frame.kind;
@@ -677,7 +717,6 @@ export default function AtlasMap({
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !premiereActive || premiereFreeLook) return;
-    const routeById = new Map(routes.map((route) => [route.id, route]));
     const storyRoutes = (premiereOrderedIds ?? []).flatMap((id) => {
       const route = routeById.get(id);
       return route ? [route] : [];
@@ -731,7 +770,7 @@ export default function AtlasMap({
         });
       }
     }
-  }, [premiereActive, premiereSceneId, premiereKind, premiereFromRouteId, premiereToRouteId, premiereCameraMode, premiereCameraTuning, premiereFreeLook, premiereReducedMotion, premiereOrderedIds, premiereRouteId, routes]);
+  }, [premiereActive, premiereSceneId, premiereKind, premiereFromRouteId, premiereToRouteId, premiereCameraMode, premiereCameraTuning, premiereFreeLook, premiereReducedMotion, premiereOrderedIds, premiereRouteId, routeById]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -744,7 +783,6 @@ export default function AtlasMap({
     const cameraCadence = Math.max(90, 240 / speedScale);
     if (!premiereReducedMotion && now - lastPremiereMontageCameraRef.current < cameraCadence && premiereProgress < 0.98) return;
 
-    const routeById = new Map(routes.map((route) => [route.id, route]));
     const revealedRoutes = revealedRouteIds.flatMap((id) => {
       const route = routeById.get(id);
       return route ? [route] : [];
@@ -772,7 +810,7 @@ export default function AtlasMap({
       duration: premiereReducedMotion ? 0 : Math.max(180, 560 / speedScale),
       easing: (value) => 1 - Math.pow(1 - value, 3),
     });
-  }, [premiereActive, premiereKind, premiereProgress, premierePlaybackSpeed, premiereFreeLook, premiereReducedMotion, premiereOrderedIds, premiereRevealedCount, routes]);
+  }, [premiereActive, premiereKind, premiereProgress, premierePlaybackSpeed, premiereFreeLook, premiereReducedMotion, premiereOrderedIds, premiereRevealedCount, routeById]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -781,17 +819,21 @@ export default function AtlasMap({
     const elapsed = lastPremiereCameraRef.current ? now - lastPremiereCameraRef.current : 180;
     if (elapsed < 150) return;
     lastPremiereCameraRef.current = now;
-    const route = routes.find((item) => item.id === premiereRouteId);
+    const route = routeById.get(premiereRouteId);
     if (!route) return;
-    const points = routePointsForZoom(route, Math.max(zoom, 9)).map((point) => [point.longitude, point.latitude] as [number, number]);
-    if (points.length < 2) return;
-    const traveler = pointAtProgress(points, premiereProgress);
-    const lead = points[Math.min(points.length - 1, traveler.index + Math.max(2, Math.round(points.length * 0.025)))];
+    const measured = measuredRoutePath(routePathCacheRef.current, route, Math.max(zoom, 9));
+    if (!measured) return;
+    const traveler = samplePremierePath(measured, premiereProgress);
+    const leadProgress = Math.min(1, premiereProgress + 0.025);
+    const lead = samplePremierePath(measured, leadProgress);
+    const bearingOrigin = leadProgress > premiereProgress
+      ? traveler.point
+      : samplePremierePath(measured, Math.max(0, premiereProgress - 0.025)).point;
     if (lastPremiereBearingRouteRef.current !== premiereRouteId) {
       lastPremiereBearingRouteRef.current = premiereRouteId;
       smoothedPremiereBearingRef.current = map.getBearing();
     }
-    const targetBearing = premiereCameraMode === "direction" ? bearingBetween(traveler.point, lead) : 0;
+    const targetBearing = premiereCameraMode === "direction" ? bearingBetween(bearingOrigin, lead.point) : 0;
     const bearing = premiereCameraMode === "direction"
       ? smoothPremiereBearing(smoothedPremiereBearingRef.current, targetBearing, elapsed, premiereCameraTuning, premierePlaybackSpeed)
       : smoothPremiereBearing(smoothedPremiereBearingRef.current, 0, elapsed, { ...premiereCameraTuning, rotationStrength: 1 }, 1);
@@ -804,14 +846,14 @@ export default function AtlasMap({
       : undefined;
     const zoomTarget = premiereCameraTuning.fitActivity ? fitCamera?.zoom ?? premiereCameraTuning.followZoom : premiereCameraTuning.followZoom;
     map.easeTo({
-      center: premiereCameraTuning.fitActivity ? fitCamera?.center ?? route.centroid : premiereCameraMode === "direction" ? lead : traveler.point,
+      center: premiereCameraTuning.fitActivity ? fitCamera?.center ?? route.centroid : premiereCameraMode === "direction" ? lead.point : traveler.point,
       zoom: Math.max(premiereCameraTuning.minZoom, Math.min(premiereCameraTuning.maxZoom, zoomTarget)),
       pitch: premiereCameraTuning.fitActivity ? premiereCameraMode === "direction" ? 30 : 18 : premiereCameraMode === "direction" ? 48 : 32,
       bearing,
       duration: 360,
       easing: (value) => 1 - Math.pow(1 - value, 3),
     });
-  }, [premiereActive, premiereKind, premiereRouteId, premiereProgress, premiereCameraMode, premiereCameraTuning, premierePlaybackSpeed, premiereFreeLook, premiereReducedMotion, routes, zoom]);
+  }, [premiereActive, premiereKind, premiereRouteId, premiereProgress, premiereCameraMode, premiereCameraTuning, premierePlaybackSpeed, premiereFreeLook, premiereReducedMotion, routeById, zoom]);
 
   useEffect(() => {
     if (wasPremiereActiveRef.current && !premiereActive && mapRef.current) fitMap(mapRef.current, bounds, true);

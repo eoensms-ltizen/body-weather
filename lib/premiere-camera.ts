@@ -9,6 +9,18 @@ export interface PremiereCameraTuning {
   speedCompensation: number;
 }
 
+export interface PremiereMeasuredPath {
+  points: [number, number][];
+  cumulativeMeters: number[];
+  totalMeters: number;
+}
+
+export interface PremierePathSample {
+  point: [number, number];
+  segmentIndex: number;
+  segmentProgress: number;
+}
+
 export const DEFAULT_PREMIERE_CAMERA_TUNING: PremiereCameraTuning = {
   fitActivity: false,
   followZoom: 12.4,
@@ -35,6 +47,16 @@ function normalizeBearing(value: number): number {
   return normalized === -180 ? 180 : normalized;
 }
 
+function coordinateDistanceMeters(from: readonly [number, number], to: readonly [number, number]): number {
+  const toRadians = (value: number) => value * Math.PI / 180;
+  const latitudeDelta = toRadians(to[1] - from[1]);
+  const longitudeDelta = toRadians(to[0] - from[0]);
+  const latitudeA = toRadians(from[1]);
+  const latitudeB = toRadians(to[1]);
+  const value = Math.sin(latitudeDelta / 2) ** 2 + Math.cos(latitudeA) * Math.cos(latitudeB) * Math.sin(longitudeDelta / 2) ** 2;
+  return EARTH_RADIUS_METERS * 2 * Math.atan2(Math.sqrt(value), Math.sqrt(Math.max(0, 1 - value)));
+}
+
 export function clampPremiereSpeed(speed: number): number {
   return clamp(finiteOr(speed, 1), 0.1, 16);
 }
@@ -42,6 +64,52 @@ export function clampPremiereSpeed(speed: number): number {
 export function premiereMontageCameraRouteIds(orderedRouteIds: readonly string[], revealedCount: number): string[] {
   const safeCount = clamp(Math.floor(finiteOr(revealedCount, 0)), 0, orderedRouteIds.length);
   return orderedRouteIds.slice(0, safeCount);
+}
+
+export function measurePremierePath(points: readonly (readonly [number, number])[]): PremiereMeasuredPath | null {
+  const validPoints = points
+    .filter((point) => Number.isFinite(point[0]) && Number.isFinite(point[1]))
+    .map((point) => [point[0], point[1]] as [number, number]);
+  if (validPoints.length < 2) return null;
+  const cumulativeMeters = [0];
+  for (let index = 1; index < validPoints.length; index += 1) {
+    cumulativeMeters.push(cumulativeMeters[index - 1] + coordinateDistanceMeters(validPoints[index - 1], validPoints[index]));
+  }
+  return { points: validPoints, cumulativeMeters, totalMeters: cumulativeMeters.at(-1) ?? 0 };
+}
+
+export function samplePremierePath(path: PremiereMeasuredPath, progress: number): PremierePathSample {
+  const t = clamp(finiteOr(progress, 0), 0, 1);
+  const lastIndex = path.points.length - 1;
+  if (path.totalMeters <= 0) {
+    const scaled = t * lastIndex;
+    const segmentIndex = Math.min(lastIndex - 1, Math.floor(scaled));
+    const segmentProgress = clamp(scaled - segmentIndex, 0, 1);
+    const from = path.points[segmentIndex];
+    const to = path.points[segmentIndex + 1];
+    return { point: [from[0] + (to[0] - from[0]) * segmentProgress, from[1] + (to[1] - from[1]) * segmentProgress], segmentIndex, segmentProgress };
+  }
+
+  const targetMeters = path.totalMeters * t;
+  let low = 1;
+  let high = lastIndex;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (path.cumulativeMeters[middle] <= targetMeters) low = middle + 1;
+    else high = middle;
+  }
+  const endIndex = targetMeters >= path.totalMeters ? lastIndex : low;
+  const segmentIndex = Math.max(0, endIndex - 1);
+  const startMeters = path.cumulativeMeters[segmentIndex];
+  const segmentMeters = path.cumulativeMeters[endIndex] - startMeters;
+  const segmentProgress = segmentMeters > 0 ? clamp((targetMeters - startMeters) / segmentMeters, 0, 1) : 0;
+  const from = path.points[segmentIndex];
+  const to = path.points[endIndex];
+  return {
+    point: [from[0] + (to[0] - from[0]) * segmentProgress, from[1] + (to[1] - from[1]) * segmentProgress],
+    segmentIndex,
+    segmentProgress,
+  };
 }
 
 export function normalizePremiereCameraTuning(tuning: PremiereCameraTuning): PremiereCameraTuning {
