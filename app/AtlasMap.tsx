@@ -82,6 +82,31 @@ function seasonAurora(season: PremiereSeason | undefined): [number, number, numb
   return [91, 239, 215, 245];
 }
 
+const PREMIERE_BURN_IN = {
+  pulseDuration: 0.42,
+  routeBloomBaseWidth: 18,
+  routeBloomFlashWidth: 38,
+  routeCoreBaseWidth: 3.2,
+  routeCoreFlashWidth: 4.5,
+  bloomBaseAlpha: 54,
+  bloomFlashAlpha: 110,
+  coreBaseAlpha: 46,
+  coreFlashAlpha: 105,
+  travelerBaseRadius: 8,
+  travelerFlashRadius: 6,
+  travelerSealRadius: 6,
+  waveBaseRadius: 24,
+  waveTravelRadius: 96,
+  waveFlashRadius: 18,
+  waveFillAlpha: 30,
+  waveLineAlpha: 150,
+  labelStart: 0.14,
+  labelEnd: 0.58,
+  labelSize: 12,
+  labelFlashSize: 2,
+  screenFlashMaxOpacity: 0.42,
+};
+
 type RoutePathLod = "low" | "medium" | "high";
 interface CachedRoutePath { sourcePoints: RoutePoint[]; points: [number, number][]; measured?: PremiereMeasuredPath | null; }
 type RoutePathCache = Partial<Record<RoutePathLod, CachedRoutePath>>;
@@ -465,14 +490,14 @@ export default function AtlasMap({
         const recoveryScore = premiere.showRecovery ? frame.rideMeta?.recoveryScore : null;
         const sealFade = Math.max(0, 1 - imprintProgress);
         const auxFade = Math.max(0, 1 - imprintProgress * 1.35);
-        const flashPrimary = imprintProgress > 0 ? Math.sin(Math.PI * Math.min(1, imprintProgress / 0.5)) : 0;
-        const flashSecondary = imprintProgress > 0.36 ? Math.sin(Math.PI * Math.min(1, (imprintProgress - 0.36) / 0.5)) * 0.68 : 0;
-        const flash = Math.max(0, flashPrimary, flashSecondary);
-        const sealStrength = frame.rideMeta?.achievementId ? 1.25 : frame.rideMeta?.firstVisit ? 1.12 : 1;
+        const flash = imprintProgress > 0 && imprintProgress <= PREMIERE_BURN_IN.pulseDuration
+          ? Math.sin(Math.PI * (imprintProgress / PREMIERE_BURN_IN.pulseDuration))
+          : 0;
+        const sealStrength = frame.rideMeta?.achievementId ? 1.12 : frame.rideMeta?.firstVisit ? 1.06 : 1;
         const drawAlpha = Math.round(255 * sealFade);
-        const sealAlpha = Math.min(255, Math.round((80 + flash * 165) * Math.max(0, 1 - imprintProgress * 0.45) * sealStrength));
+        const sealAlpha = Math.min(255, Math.round((PREMIERE_BURN_IN.bloomBaseAlpha + flash * PREMIERE_BURN_IN.bloomFlashAlpha) * Math.max(0, 1 - imprintProgress * 0.45) * sealStrength));
         const travelerAlpha = Math.round(255 * Math.max(0, 1 - imprintProgress * 1.08));
-        const travelerRadius = 9 + flash * 14 + imprintProgress * 18;
+        const travelerRadius = PREMIERE_BURN_IN.travelerBaseRadius + flash * PREMIERE_BURN_IN.travelerFlashRadius + imprintProgress * PREMIERE_BURN_IN.travelerSealRadius;
         const recoveryColor: [number, number, number, number] = recoveryScore === null || recoveryScore === undefined
           ? [94, 235, 213, 45]
           : recoveryScore >= 70 ? [102, 245, 177, 72] : recoveryScore >= 45 ? [255, 205, 92, 72] : [255, 104, 145, 72];
@@ -491,8 +516,8 @@ export default function AtlasMap({
         const partialData = travelProgress > 0 && drawAlpha > 4 ? [{ path: partialPath }] : [];
         const hotData = travelProgress > 0 && travelProgress < 1 && imprintProgress === 0 ? [{ path: hotPath }] : [];
         const sealData = imprintProgress > 0 ? [{ path: measured.points }] : [];
-        const sealWaveData = imprintProgress > 0 ? [{ position: traveler.point }] : [];
-        const sealedLabelData = imprintProgress > 0.18 && imprintProgress < 0.86 ? [{ position: traveler.point, text: "ACTIVITY SEALED" }] : [];
+        const sealWaveData = flash > 0.02 ? [{ position: traveler.point }] : [];
+        const sealedLabelData = imprintProgress > PREMIERE_BURN_IN.labelStart && imprintProgress < PREMIERE_BURN_IN.labelEnd ? [{ position: traveler.point, text: "ACTIVITY SEALED" }] : [];
         overlay.setProps({ layers: [
           new PathLayer({
             id: "premiere-active-halo",
@@ -532,7 +557,7 @@ export default function AtlasMap({
             data: sealData,
             getPath: (item) => item.path,
             getColor: [aurora[0], aurora[1], aurora[2], sealAlpha],
-            getWidth: 30 + flash * 76 * sealStrength,
+            getWidth: PREMIERE_BURN_IN.routeBloomBaseWidth + flash * PREMIERE_BURN_IN.routeBloomFlashWidth * sealStrength,
             widthUnits: "pixels",
             capRounded: true,
             jointRounded: true,
@@ -542,8 +567,8 @@ export default function AtlasMap({
             id: "premiere-seal-core",
             data: sealData,
             getPath: (item) => item.path,
-            getColor: [252, 255, 247, Math.min(255, Math.round((80 + flash * 175) * sealFade))],
-            getWidth: 4 + flash * 9,
+            getColor: [252, 255, 247, Math.min(255, Math.round((PREMIERE_BURN_IN.coreBaseAlpha + flash * PREMIERE_BURN_IN.coreFlashAlpha) * sealFade))],
+            getWidth: PREMIERE_BURN_IN.routeCoreBaseWidth + flash * PREMIERE_BURN_IN.routeCoreFlashWidth,
             widthUnits: "pixels",
             capRounded: true,
             jointRounded: true,
@@ -589,11 +614,11 @@ export default function AtlasMap({
             id: "premiere-seal-wave",
             data: sealWaveData,
             getPosition: (item) => item.position,
-            getRadius: 38 + imprintProgress * 215 + flash * 42,
+            getRadius: PREMIERE_BURN_IN.waveBaseRadius + imprintProgress * PREMIERE_BURN_IN.waveTravelRadius + flash * PREMIERE_BURN_IN.waveFlashRadius,
             radiusUnits: "pixels",
-            getFillColor: [aurora[0], aurora[1], aurora[2], Math.round(48 * sealFade)],
+            getFillColor: [aurora[0], aurora[1], aurora[2], Math.round(PREMIERE_BURN_IN.waveFillAlpha * sealFade)],
             stroked: true,
-            getLineColor: achievement?.evidence === "source-confirmed" ? [255, 224, 122, Math.round(235 * sealFade)] : [aurora[0], aurora[1], aurora[2], Math.round(220 * sealFade)],
+            getLineColor: achievement?.evidence === "source-confirmed" ? [255, 224, 122, Math.round(PREMIERE_BURN_IN.waveLineAlpha * sealFade)] : [aurora[0], aurora[1], aurora[2], Math.round(PREMIERE_BURN_IN.waveLineAlpha * sealFade)],
             lineWidthMinPixels: 2,
             parameters: { depthWriteEnabled: false },
           }),
@@ -602,7 +627,7 @@ export default function AtlasMap({
             data: sealedLabelData,
             getPosition: (item) => item.position,
             getText: (item) => item.text,
-            getSize: 14 + flash * 4,
+            getSize: PREMIERE_BURN_IN.labelSize + flash * PREMIERE_BURN_IN.labelFlashSize,
             getColor: [238, 255, 249, Math.round(240 * sealFade)],
             getPixelOffset: [0, -42],
             getTextAnchor: "middle",
@@ -806,7 +831,11 @@ export default function AtlasMap({
   const premiereCameraTuning = premiere?.cameraTuning;
   const premiereSeason = premiere?.frame.rideMeta?.season;
   const premiereBurnFlashOpacity = !premiereReducedMotion && premiereKind === "ride" && premiereImprintProgress > 0
-    ? Math.min(0.92, Math.max(0, Math.sin(Math.PI * Math.min(1, premiereImprintProgress / 0.5))) * Math.max(0, 1 - premiereImprintProgress * 0.18))
+    ? PREMIERE_BURN_IN.screenFlashMaxOpacity * (
+      premiereImprintProgress <= PREMIERE_BURN_IN.pulseDuration
+        ? Math.sin(Math.PI * (premiereImprintProgress / PREMIERE_BURN_IN.pulseDuration))
+        : 0
+    )
     : 0;
 
   useEffect(() => {
