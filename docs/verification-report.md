@@ -61,3 +61,13 @@ npm run build           PASS
 - 지오코딩을 하지 않아 중립 지역 라벨을 사용합니다.
 - headless 환경의 외부 타일은 차단될 수 있으나 경로 fallback과 Poster는 영향받지 않습니다.
 - `npm audit`의 고위험 항목은 Cloudflare/Vite 도구 업데이트로 제거했습니다. Next 16.2.6 내부 PostCSS에 중간 등급 2건이 남았고, npm의 자동 해법은 Next 9.3.3으로 강제 하향하므로 적용하지 않았습니다. 앱은 사용자 제공 CSS를 stringify하지 않습니다.
+
+## 2026-07-16 · Local Atlas Reuse 추가 검증
+
+- IndexedDB에는 사용자가 선택한 경우에만 최신 정규화 Atlas 한 세트를 저장하며 ZIP Blob과 미디어는 저장하지 않습니다.
+- 첫 화면은 가벼운 메타데이터만 읽고, `이어보기`를 누른 뒤 전체 활동·GPS·웰니스 결과를 복원합니다.
+- 실제 Chrome에서 저장 → 새로고침 → 이전 Atlas 카드 → 복원 → Data & Privacy 삭제 → 첫 화면 저장 카드 제거 흐름을 확인했습니다.
+- 390×844 Chrome에서 Premiere 설정의 시작 버튼 접근, 8× 재생 HUD의 화면 bounds, Finale 도달과 캡처를 확인했습니다.
+- 현재 단위 테스트는 52/52, Atlas·Data & Privacy axe critical/serious 0건입니다.
+- 2,400개 합성 경로 Atlas 계산은 2.428초, DOMContentLoaded는 223ms였습니다. 외부 지도 공급자 지연과 fallback을 포함한 준비는 13.143초였습니다.
+- 실제 2.44GB Strava 결과의 IndexedDB quota와 저장·복원 시간은 사용자가 배포 URL에서 파일을 직접 선택해 최종 확인해야 합니다.

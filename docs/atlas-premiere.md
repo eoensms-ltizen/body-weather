@@ -48,7 +48,8 @@ Atlas Premiere는 Experience Atlas의 경로를 시간순으로 재구성해 오
 - [x] 프로덕션 빌드.
 - [x] 데스크톱 실브라우저: 설정, 재생, Activity Card, Memory Jump, Free Look/복귀, Finale, PNG 연결, 콘솔 오류 확인.
 - [ ] 실제 활동에서 Camera Lab 기본값과 4×/8× 회전 감각 최종 사용자 튜닝.
-- [ ] 배포 URL에서 모바일 실제 기기 확인: 390px 전후에서 설정 스크롤, HUD, 하단 컨트롤, Finale 버튼 터치 영역.
+- [x] 390×844 실제 Chrome 렌더: 설정 시작 버튼, 8× 재생 HUD 화면 bounds, Finale 도달과 캡처.
+- [ ] 배포 URL에서 모바일 실제 기기 터치 감각 최종 확인.
 - [ ] 실제 대용량 Strava/Garmin ZIP으로 장시간 프레임 안정성과 메모리 확인.
 
 ## 완료 기준

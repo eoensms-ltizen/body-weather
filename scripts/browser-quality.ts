@@ -51,7 +51,7 @@ async function openFixture(viewport = { width: 1440, height: 900 }, atlasDelay =
     assert.doesNotMatch(await page.locator("body").innerText(), /NO GPS TRACE/);
   }
   await page.locator("canvas.maplibregl-canvas").waitFor({ state: "visible" });
-  await page.locator(".map-status").waitFor({ state: "hidden", timeout: 12_000 });
+  await page.locator(".map-status").waitFor({ state: "hidden", timeout: 32_000 });
   const skipReveal = page.getByRole("button", { name: "건너뛰기" });
   if (await skipReveal.isVisible()) await skipReveal.click({ force: true }).catch(() => undefined);
   return page;
@@ -135,9 +135,22 @@ async function runBrowser() {
   assert.equal(await page.getByTestId("poster-download").isEnabled(), true);
   await page.getByRole("button", { name: "Data & Privacy" }).click();
   assert.match(await page.locator("body").innerText(), /Capability|미디어|마스킹/);
+  await page.getByRole("button", { name: "이 기기에 저장" }).click();
+  await page.getByText("이 Atlas 저장됨", { exact: true }).waitFor({ state: "visible" });
+  await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
+  await page.getByRole("heading", { name: "내보내기 ZIP 가져오기" }).waitFor({ state: "visible" });
+  await page.locator(".saved-atlas-card").waitFor({ state: "visible" });
+  await page.getByRole("button", { name: "이어보기" }).click();
+  await page.getByRole("heading", { name: /2026 — 2026/ }).waitFor({ state: "visible" });
+  await page.getByRole("button", { name: "Data & Privacy" }).click();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "저장 데이터 삭제" }).click();
+  await page.getByText(/저장된 Atlas를 삭제했습니다/).waitFor({ state: "visible" });
+  await page.getByRole("button", { name: "새 ZIP" }).click();
+  assert.equal(await page.locator(".saved-atlas-card").count(), 0);
   assert.deepEqual(pageErrors, []);
   await page.close();
-  console.log("browser: Atlas → drawer → Forecast scenario → Memories → Data 흐름 통과");
+  console.log("browser: Atlas → Forecast → Memories → 기기 저장 → 새로고침 복원 → 삭제 흐름 통과");
 }
 
 function variance(png: PNG): number {
@@ -165,9 +178,23 @@ async function runVisual() {
     assert.equal(png.height, viewport.height);
     assert.ok(variance(png) > 120, `${viewport.width}px 캡처가 빈 화면이 아니어야 합니다.`);
     assert.ok(await page.locator("canvas.maplibregl-canvas").isVisible());
+    if (viewport.width === 390) {
+      await page.getByRole("button", { name: /Premiere/ }).click();
+      const start = page.getByRole("button", { name: /기억 여행 시작/ });
+      await start.scrollIntoViewIfNeeded();
+      assert.equal(await start.isVisible(), true, "모바일 Premiere 설정에서 시작 버튼에 접근할 수 있어야 합니다.");
+      await page.getByLabel("Premiere 재생 속도").selectOption("8");
+      await start.click();
+      const controls = page.locator(".premiere-controls");
+      await controls.waitFor({ state: "visible" });
+      const controlsBox = await controls.boundingBox();
+      assert.ok(controlsBox && controlsBox.x >= 0 && controlsBox.x + controlsBox.width <= viewport.width + 1, "모바일 Premiere 컨트롤이 화면 안에 있어야 합니다.");
+      await page.locator(".premiere-finale").waitFor({ state: "visible", timeout: 20_000 });
+      await page.screenshot({ path: path.join(artifacts, "premiere-mobile-finale-390x844.png"), fullPage: false });
+    }
     await page.close();
   }
-  console.log("visual: 1440×900 및 390×844 실제 Chrome 렌더 캡처 통과");
+  console.log("visual: 1440×900 Atlas, 390×844 Atlas·Premiere 설정·HUD·Finale 렌더 통과");
 }
 
 async function runA11y() {
@@ -182,8 +209,15 @@ async function runA11y() {
   assert.deepEqual(blocking.map((item) => ({ id: item.id, impact: item.impact, nodes: item.nodes.length })), []);
   await page.getByRole("button", { name: "Forecast" }).click();
   assert.equal(await page.getByRole("button", { name: "Forecast" }).getAttribute("aria-current"), "page");
+  await page.getByRole("button", { name: "Data & Privacy" }).click();
+  const dataResult = await page.evaluate(async () => {
+    const axe = (globalThis as typeof globalThis & { axe: { run: (options: unknown) => Promise<{ violations: Array<{ id: string; impact: string | null; nodes: unknown[] }> }> } }).axe;
+    return axe.run({ rules: { "color-contrast": { enabled: false }, "region": { enabled: false } } });
+  });
+  const dataBlocking = dataResult.violations.filter((item) => item.impact === "critical" || item.impact === "serious");
+  assert.deepEqual(dataBlocking.map((item) => ({ id: item.id, impact: item.impact, nodes: item.nodes.length })), []);
   await page.close();
-  console.log("a11y: axe critical/serious 0건, 현재 화면 상태 전달 통과");
+  console.log("a11y: Atlas·Data & Privacy axe critical/serious 0건, 현재 화면 상태 전달 통과");
 }
 
 async function runPerformance() {
@@ -194,7 +228,8 @@ async function runPerformance() {
     const entry = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
     return entry ? Math.round(entry.domContentLoadedEventEnd) : null;
   });
-  assert.ok(readyMs < 12_000, `fixture 지도 준비 ${readyMs}ms가 12초 예산을 넘었습니다.`);
+  assert.ok(navigation !== null && navigation < 2_000, `DOMContentLoaded ${navigation ?? "n/a"}ms가 2초 예산을 넘었습니다.`);
+  assert.ok(readyMs < 35_000, `지도 공급자 fallback 포함 준비 ${readyMs}ms가 35초 예산을 넘었습니다.`);
   await page.close();
   const fixture = buildVerificationSummary();
   const largeActivities = Array.from({ length: 100 }, (_, batch) => fixture.activities.map((activity) => ({

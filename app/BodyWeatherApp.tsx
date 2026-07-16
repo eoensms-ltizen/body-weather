@@ -8,6 +8,7 @@ import { classifyActivity, type ActivityEnvironment, type ActivityGroup } from "
 import { buildForecast } from "@/lib/forecast";
 import { buildMemories } from "@/lib/memories";
 import { importHealthArchives } from "@/lib/importer";
+import { deleteCachedAtlas, getCachedAtlasMetadata, loadCachedAtlas, localCacheErrorMessage, requestPersistentLocalStorage, saveCachedAtlas, type CachedAtlasMetadata } from "@/lib/local-cache";
 import type { PremiereMapState } from "@/lib/premiere";
 import { filterPosterRoutes, posterDimensions, renderPoster, type PosterColorMode, type PosterRatio, type PosterTheme } from "@/lib/poster";
 import { countBucket, durationBucket, sizeBucket, telemetryEnabled, trackEvent } from "@/lib/telemetry";
@@ -16,6 +17,7 @@ import type { Achievement, Activity, AtlasModel, AtlasRouteFeature, Capability, 
 
 type View = "atlas" | "forecast" | "memories" | "data";
 type AtlasBuildState = "idle" | "building" | "ready";
+type LocalCacheStatus = "checking" | "ready" | "saving" | "restoring" | "deleting" | "error";
 type PosterScope = "filter" | "selection" | "all";
 interface PosterSelection { bounds: RouteBounds; routeIds: string[]; }
 
@@ -86,7 +88,19 @@ function elapsedText(seconds: number): string {
   return `${Math.floor(seconds / 60)}분 ${Math.floor(seconds % 60)}초`;
 }
 
-function ImportScreen({ onImported }: { onImported: (summary: ImportSummary) => void }) {
+function savedTimeLabel(value: string): string {
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? date.toLocaleString("ko-KR", { dateStyle: "medium", timeStyle: "short" }) : value;
+}
+
+function ImportScreen({ onImported, cachedAtlas, cacheStatus, cacheMessage, onRestore, onDeleteCache }: {
+  onImported: (summary: ImportSummary, rememberOnDevice: boolean) => void;
+  cachedAtlas: CachedAtlasMetadata | null;
+  cacheStatus: LocalCacheStatus;
+  cacheMessage: string;
+  onRestore: () => void;
+  onDeleteCache: () => void;
+}) {
   const [files, setFiles] = useState<File[]>([]);
   const [fullHistory, setFullHistory] = useState(true);
   const [startDate, setStartDate] = useState("2026-04-01");
@@ -96,6 +110,7 @@ function ImportScreen({ onImported }: { onImported: (summary: ImportSummary) => 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [rememberOnDevice, setRememberOnDevice] = useState(false);
   const startedAtRef = useRef(0);
   const fileBytes = useMemo(() => files.reduce((sum, file) => sum + file.size, 0), [files]);
   const initialEstimate = Math.max(6, fileBytes / 1024 / 1024 / 18);
@@ -126,7 +141,7 @@ function ImportScreen({ onImported }: { onImported: (summary: ImportSummary) => 
       });
       if (!summary.activities.length && !summary.wellness.length) throw new Error("지원 가능한 운동 또는 웰니스 데이터가 없습니다.");
       trackEvent("import_completed", { duration_bucket: durationBucket((performance.now() - startedAtRef.current) / 1000), activity_count: countBucket(summary.activities.length) });
-      onImported(summary);
+      onImported(summary, rememberOnDevice);
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : "가져오기를 완료하지 못했습니다.";
       setError(message);
@@ -148,6 +163,11 @@ function ImportScreen({ onImported }: { onImported: (summary: ImportSummary) => 
     </section>
     <section className="import-card" aria-labelledby="import-title">
       <div><p className="step-label">01 / OPEN YOUR ATLAS</p><h2 id="import-title">내보내기 ZIP 가져오기</h2><p>Strava, Garmin 중 하나만 있어도 시작합니다. 사진과 영상은 제외하고 존재하는 필드만 사용합니다.</p></div>
+      {cachedAtlas && <section className="saved-atlas-card" aria-label="이 기기에 저장된 Atlas">
+        <div><span>ON THIS DEVICE</span><strong>이전 Atlas 이어보기</strong><p>{cachedAtlas.startDate} — {cachedAtlas.endDate} · 활동 {cachedAtlas.activityCount.toLocaleString("ko-KR")}개 · 경로 {cachedAtlas.routeActivityCount.toLocaleString("ko-KR")}개</p><small>{cachedAtlas.sources.map((source) => source.toUpperCase()).join(" + ")} · {savedTimeLabel(cachedAtlas.savedAt)} 저장</small></div>
+        <div><button type="button" disabled={cacheStatus === "restoring" || busy} onClick={onRestore}>{cacheStatus === "restoring" ? "불러오는 중…" : "이어보기"}</button><button type="button" className="saved-atlas-delete" disabled={cacheStatus === "deleting" || busy} onClick={onDeleteCache}>삭제</button></div>
+      </section>}
+      {!cachedAtlas && cacheStatus === "checking" && <p className="cache-status-copy" role="status">이 기기에 저장된 Atlas를 확인하는 중…</p>}
       <label className="drop-zone" htmlFor="archive-files">
         <input id="archive-files" data-testid="archive-input" type="file" accept=".zip,application/zip" multiple onChange={(event) => { setFiles(Array.from(event.target.files ?? [])); setProgress(0); setStage("ZIP을 선택하면 모든 처리는 이 브라우저 안에서 시작됩니다."); }} />
         <span className="drop-icon">＋</span><strong>ZIP 파일 선택</strong><small>여러 ZIP을 한 번에 넣을 수 있습니다.</small>
@@ -159,8 +179,10 @@ function ImportScreen({ onImported }: { onImported: (summary: ImportSummary) => 
         <button type="button" aria-pressed={!fullHistory} className={!fullHistory ? "active" : ""} onClick={() => setFullHistory(false)}><b>기간 지정</b><small>일부 기간만 분석합니다</small></button>
       </div>
       {!fullHistory && <div className="date-fields"><label>시작일<input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} /></label><label>종료일<input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} /></label></div>}
+      <label className="remember-atlas"><input type="checkbox" checked={rememberOnDevice} onChange={(event) => setRememberOnDevice(event.target.checked)} /><span><b>분석 결과를 이 기기에 기억</b><small>ZIP 원본은 저장하지 않습니다. GPS·건강 분석 결과는 이 브라우저 프로필에 암호화 없이 저장되며 언제든 삭제할 수 있습니다.</small></span></label>
       {busy && <div className="progress-panel" role="status" aria-live="polite"><header><span>LOCAL ANALYSIS</span><b>{Math.round(progress * 100)}%</b></header><div><span style={{ width: `${Math.max(4, progress * 100)}%` }} /></div><p>{stage}</p><footer><span>경과 {elapsedText(elapsedSeconds)}</span><b>남은 시간 {timeEstimate(remainingSeconds)}</b></footer></div>}
       {error && <p className="error-message" role="alert">{error}</p>}
+      {cacheMessage && <p className={`cache-message ${cacheStatus === "error" ? "error" : ""}`} role={cacheStatus === "error" ? "alert" : "status"}>{cacheMessage}</p>}
       <button className="primary-action" data-testid="import-action" type="button" disabled={!files.length || busy} onClick={importFiles}>{busy ? "경험을 지도에 펼치는 중…" : "Experience Atlas 만들기"}</button>
       <p className="security-copy">안전하지 않은 압축 경로와 비정상 크기를 차단하며, 한 파일의 오류가 다른 정상 데이터를 막지 않습니다.</p>
       <details className="export-guide">
@@ -449,11 +471,21 @@ function MemoriesView({ summary, atlas, posterSelection, hiddenIds, filteredActi
   </section>;
 }
 
-function DataView({ summary, atlas }: { summary: ImportSummary; atlas: AtlasModel }) {
+function DataView({ summary, atlas, cachedAtlas, cacheStatus, cacheMessage, onSaveCache, onDeleteCache }: {
+  summary: ImportSummary;
+  atlas: AtlasModel;
+  cachedAtlas: CachedAtlasMetadata | null;
+  cacheStatus: LocalCacheStatus;
+  cacheMessage: string;
+  onSaveCache: () => void;
+  onDeleteCache: () => void;
+}) {
+  const currentSaved = cachedAtlas?.importedAt === summary.importedAt;
   return <section className="data-view content-page">
     <header className="content-header"><p className="eyebrow">DATA & PRIVACY</p><h1>무엇을 알고,<br /><em>무엇을 모르는지.</em></h1><p>빈 필드와 센서 공백을 감추지 않고, 실제로 사용할 수 있는 경험만 구성합니다.</p></header>
     <CapabilityStrip capabilities={summary.capabilityProfile.capabilities} />
-    <div className="privacy-grid"><article><span>LOCAL PROCESSING</span><strong>원본 서버 전송 없음</strong><p>ZIP, 건강 원본, GPS 경로는 현재 브라우저에서만 해석합니다.</p></article><article><span>ROUTE PRIVACY</span><strong>{atlas.privacyZones.length}개 민감 후보</strong><p>반복된 출발·도착 주변 300m를 지도와 Poster에서 마스킹합니다.</p></article><article><span>MAP NETWORK</span><strong>베이스맵 타일만</strong><p>경로 원본은 보내지 않지만 보고 있는 지도 영역은 타일 공급자에게 전달될 수 있습니다.</p></article><article><span>MEDIA EXCLUDED</span><strong>{summary.mediaSkipped.toLocaleString("ko-KR")}개 제외</strong><p>사진과 영상은 압축 해제하거나 분석하지 않았습니다.</p></article><article><span>ANONYMOUS USAGE</span><strong>{telemetryEnabled() ? "익명 집계 활성" : "현재 비활성"}</strong><p>활성화해도 시도·완료·오류와 크기 구간만 집계합니다. 파일명, 날짜, 좌표, 활동명, 건강수치, 사용자 ID는 보내지 않습니다.</p></article></div>
+    <div className="privacy-grid"><article><span>LOCAL PROCESSING</span><strong>원본 서버 전송 없음</strong><p>ZIP, 건강 원본, GPS 경로는 현재 브라우저에서만 해석합니다.</p></article><article><span>DEVICE MEMORY</span><strong>{currentSaved ? "이 Atlas 저장됨" : cachedAtlas ? "다른 Atlas 저장됨" : "저장된 Atlas 없음"}</strong><p>선택한 경우에만 분석 결과를 이 브라우저의 IndexedDB에 저장합니다. 클라우드 동기화는 하지 않습니다.</p></article><article><span>ROUTE PRIVACY</span><strong>{atlas.privacyZones.length}개 민감 후보</strong><p>반복된 출발·도착 주변 300m를 지도와 Poster에서 마스킹합니다.</p></article><article><span>MAP NETWORK</span><strong>베이스맵 타일만</strong><p>경로 원본은 보내지 않지만 보고 있는 지도 영역은 타일 공급자에게 전달될 수 있습니다.</p></article><article><span>MEDIA EXCLUDED</span><strong>{summary.mediaSkipped.toLocaleString("ko-KR")}개 제외</strong><p>사진과 영상은 압축 해제하거나 분석하지 않았습니다.</p></article><article><span>ANONYMOUS USAGE</span><strong>{telemetryEnabled() ? "익명 집계 활성" : "현재 비활성"}</strong><p>활성화해도 시도·완료·오류와 크기 구간만 집계합니다. 파일명, 날짜, 좌표, 활동명, 건강수치, 사용자 ID는 보내지 않습니다.</p></article></div>
+    <section className="local-data-control" aria-labelledby="local-data-title"><div><span>DEVICE DATA CONTROL</span><h2 id="local-data-title">새로고침 뒤에도 이 Atlas를 이어보세요.</h2><p>정규화된 활동·GPS·웰니스 결과 한 세트만 이 브라우저 프로필에 저장합니다. 원본 ZIP은 저장하지 않으며, 다른 기기나 다른 브라우저와 공유되지 않습니다. 공용 PC에서는 저장하지 마세요.</p>{cachedAtlas && <small>{currentSaved ? "현재 Atlas" : "기존 Atlas"} · {cachedAtlas.activityCount.toLocaleString("ko-KR")} activities · {savedTimeLabel(cachedAtlas.savedAt)} 저장</small>}{cacheMessage && <em className={cacheStatus === "error" ? "error" : ""}>{cacheMessage}</em>}</div><div><button type="button" disabled={cacheStatus === "saving" || cacheStatus === "deleting"} onClick={onSaveCache}>{cacheStatus === "saving" ? "저장하는 중…" : currentSaved ? "현재 Atlas 다시 저장" : cachedAtlas ? "현재 Atlas로 교체" : "이 기기에 저장"}</button>{cachedAtlas && <button type="button" className="danger" disabled={cacheStatus === "saving" || cacheStatus === "deleting"} onClick={onDeleteCache}>{cacheStatus === "deleting" ? "삭제하는 중…" : "저장 데이터 삭제"}</button>}</div></section>
     <div className="data-summary-grid"><div><span>활동</span><strong>{summary.activities.length}</strong></div><div><span>경로</span><strong>{atlas.routes.length}</strong></div><div><span>웰니스 일수</span><strong>{summary.wellness.length}</strong></div><div><span>진단</span><strong>{summary.issues.length}</strong></div></div>
     <div className="issue-list"><h2>가져오기 진단</h2>{summary.issues.length ? summary.issues.slice(0, 30).map((issue) => <div key={issue.id} className={issue.severity}><span>{issue.code}</span><p>{issue.message}</p><b>{issue.recoverable ? "복구됨" : "확인 필요"}</b></div>) : <p className="empty-state">해석 오류 없이 가져왔습니다.</p>}</div>
     <details className="advanced-insights"><summary>Advanced insights · 기존 상관관계 분석 안내</summary><p>고급 분석은 최소 5개의 측정된 날짜쌍이 있을 때만 생성됩니다. 상관관계는 원인이나 의료 판단을 의미하지 않습니다.</p></details>
@@ -478,9 +510,12 @@ export default function BodyWeatherApp() {
   const [posterSelection, setPosterSelection] = useState<PosterSelection | null>(null);
   const [fullAtlas, setFullAtlas] = useState<AtlasModel>(() => buildAtlasModel([], true));
   const [atlasState, setAtlasState] = useState<AtlasBuildState>("idle");
+  const [cachedAtlas, setCachedAtlas] = useState<CachedAtlasMetadata | null>(null);
+  const [cacheStatus, setCacheStatus] = useState<LocalCacheStatus>("checking");
+  const [cacheMessage, setCacheMessage] = useState("");
   const atlasStartedAtRef = useRef(0);
 
-  const handleImported = useCallback((result: ImportSummary) => {
+  const applySummary = useCallback((result: ImportSummary) => {
     setSummary(result);
     setRangeStart(result.startDate);
     setRangeEnd(result.endDate);
@@ -495,6 +530,70 @@ export default function BodyWeatherApp() {
     setView("atlas");
     const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     setReveal(reduced ? 1 : 0.03);
+  }, []);
+
+  const persistSummary = useCallback(async (result: ImportSummary) => {
+    setCacheStatus("saving");
+    setCacheMessage("분석 결과를 이 기기에 저장하는 중입니다.");
+    try {
+      const persistent = await requestPersistentLocalStorage();
+      const metadata = await saveCachedAtlas(result);
+      setCachedAtlas(metadata);
+      setCacheStatus("ready");
+      setCacheMessage(persistent ? "이 Atlas를 이 기기에 저장했습니다." : "이 Atlas를 저장했습니다. 브라우저 저장 공간이 부족하면 자동 정리될 수 있습니다.");
+    } catch (error) {
+      setCacheStatus("error");
+      setCacheMessage(localCacheErrorMessage(error));
+    }
+  }, []);
+
+  const handleImported = useCallback((result: ImportSummary, rememberOnDevice = false) => {
+    applySummary(result);
+    if (rememberOnDevice) void persistSummary(result);
+  }, [applySummary, persistSummary]);
+
+  useEffect(() => {
+    let disposed = false;
+    getCachedAtlasMetadata().then((metadata) => {
+      if (disposed) return;
+      setCachedAtlas(metadata);
+      setCacheStatus("ready");
+    }).catch((error) => {
+      if (disposed) return;
+      setCacheStatus("error");
+      setCacheMessage(localCacheErrorMessage(error));
+    });
+    return () => { disposed = true; };
+  }, []);
+
+  const restoreCachedAtlas = useCallback(async () => {
+    setCacheStatus("restoring");
+    setCacheMessage("이 기기의 Atlas를 불러오는 중입니다.");
+    try {
+      const restored = await loadCachedAtlas();
+      if (!restored) throw new Error("저장된 Atlas를 읽을 수 없습니다. 저장 데이터를 삭제하고 ZIP을 다시 가져와 주세요.");
+      applySummary(restored);
+      setCacheStatus("ready");
+      setCacheMessage("저장된 Atlas를 불러왔습니다.");
+    } catch (error) {
+      setCacheStatus("error");
+      setCacheMessage(localCacheErrorMessage(error));
+    }
+  }, [applySummary]);
+
+  const removeCachedAtlas = useCallback(async () => {
+    if (!window.confirm("이 브라우저에 저장된 Atlas 분석 결과를 삭제할까요? 현재 열려 있는 화면은 새 ZIP을 누르기 전까지 유지됩니다.")) return;
+    setCacheStatus("deleting");
+    setCacheMessage("이 기기의 저장 데이터를 삭제하는 중입니다.");
+    try {
+      await deleteCachedAtlas();
+      setCachedAtlas(null);
+      setCacheStatus("ready");
+      setCacheMessage("이 기기에 저장된 Atlas를 삭제했습니다. 현재 열린 Atlas는 새 ZIP을 누르기 전까지 유지됩니다.");
+    } catch (error) {
+      setCacheStatus("error");
+      setCacheMessage(localCacheErrorMessage(error));
+    }
   }, []);
 
   useEffect(() => {
@@ -609,18 +708,18 @@ export default function BodyWeatherApp() {
     setView("atlas");
   };
 
-  if (!summary) return <ImportScreen onImported={handleImported} />;
+  if (!summary) return <ImportScreen onImported={handleImported} cachedAtlas={cachedAtlas} cacheStatus={cacheStatus} cacheMessage={cacheMessage} onRestore={() => { void restoreCachedAtlas(); }} onDeleteCache={() => { void removeCachedAtlas(); }} />;
 
   return <main className="app-shell">
     <header className="app-header">
-      <button className="brand-button" type="button" onClick={() => setView("atlas")}><span>BW</span><strong>BODY WEATHER<small>LOCAL · PRIVATE</small></strong></button>
+      <button className="brand-button" type="button" onClick={() => setView("atlas")}><span>BW</span><strong>BODY WEATHER<small>{cachedAtlas?.importedAt === summary.importedAt ? "LOCAL · DEVICE SAVED" : "LOCAL · PRIVATE"}</small></strong></button>
       <nav aria-label="주요 화면"><button aria-current={view === "atlas" ? "page" : undefined} className={view === "atlas" ? "active" : ""} onClick={() => setView("atlas")}>Atlas</button><button aria-current={view === "forecast" ? "page" : undefined} className={view === "forecast" ? "active" : ""} onClick={() => setView("forecast")}>Forecast</button><button aria-current={view === "memories" ? "page" : undefined} className={view === "memories" ? "active" : ""} onClick={() => setView("memories")}>Memories</button><button aria-current={view === "data" ? "page" : undefined} className={view === "data" ? "active" : ""} onClick={() => setView("data")}>Data & Privacy</button></nav>
       <button className="reset-button" type="button" onClick={() => { setSummary(null); setFullAtlas(buildAtlasModel([], true)); setAtlasState("idle"); setSelectedRoute(null); setSelectedAchievement(null); setFocusCoordinate(null); setHiddenIds(new Set()); setPosterSelection(null); }}>새 ZIP</button>
     </header>
     {view === "atlas" && <AtlasView summary={summary} colorMode={colorMode} setColorMode={setColorMode} filteredActivities={filteredActivities} rangeStart={rangeStart} rangeEnd={rangeEnd} setRangeStart={setRangeStart} setRangeEnd={setRangeEnd} activityGroup={activityGroup} setActivityGroup={setActivityGroup} environment={environment} setEnvironment={setEnvironment} reveal={reveal} setReveal={setReveal} selectedRoute={selectedRoute} onRouteSelect={selectRoute} selectedAchievement={selectedAchievement} onAchievementSelect={selectAchievement} focusCoordinate={focusCoordinate} onOpenForecast={() => setView("forecast")} onOpenMemories={() => setView("memories")} fullAtlas={fullAtlas} atlasState={atlasState} interactionMode={interactionMode} setInteractionMode={changeInteractionMode} hiddenIds={hiddenIds} onAreaSelection={handleAreaSelection} viewportBounds={viewportBounds} onViewportChange={setViewportBounds} posterSelection={posterSelection} onCaptureViewport={captureViewport} onClearHidden={() => setHiddenIds(new Set())} />}
     {view === "forecast" && <ForecastView summary={summary} />}
     {view === "memories" && <MemoriesView summary={summary} atlas={fullAtlas} posterSelection={posterSelection} hiddenIds={hiddenIds} filteredActivities={filteredActivities} filterActive={atlasFilterActive} filterLabel={atlasFilterLabel} onOpenMemory={openMemory} />}
-    {view === "data" && <DataView summary={summary} atlas={fullAtlas} />}
+    {view === "data" && <DataView summary={summary} atlas={fullAtlas} cachedAtlas={cachedAtlas} cacheStatus={cacheStatus} cacheMessage={cacheMessage} onSaveCache={() => { void persistSummary(summary); }} onDeleteCache={() => { void removeCachedAtlas(); }} />}
     {selectedRoute && <ActivityDrawer route={selectedRoute} relatedRoutes={relatedRoutes} achievement={selectedAchievement?.activityId === selectedRoute.id ? selectedAchievement : null} onSelect={selectRoute} onClose={() => { setSelectedRoute(null); setSelectedAchievement(null); }} />}
   </main>;
 }
