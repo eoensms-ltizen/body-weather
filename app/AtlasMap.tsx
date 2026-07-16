@@ -210,8 +210,19 @@ export default function AtlasMap({
     });
     map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), "bottom-right");
     map.addControl(new maplibregl.AttributionControl({ compact: true, customAttribution: "Map data © OpenStreetMap contributors · CARTO / OpenFreeMap" }), "bottom-right");
-    const overlay = new MapboxOverlay({ interleaved: false, layers: [] });
-    const flowOverlay = new MapboxOverlay({ interleaved: false, layers: [] });
+    // Luma enables its WebGL debug wrapper by default in development builds.
+    // That wrapper is useful for shader debugging, but makes large local atlases
+    // substantially slower and can conflict with Deck attribute transitions.
+    const overlay = new MapboxOverlay({
+      interleaved: false,
+      layers: [],
+      deviceProps: { debug: false, debugGPUTime: false, debugWebGL: false },
+    });
+    const flowOverlay = new MapboxOverlay({
+      interleaved: false,
+      layers: [],
+      deviceProps: { debug: false, debugGPUTime: false, debugWebGL: false },
+    });
     map.addControl(overlay as unknown as maplibregl.IControl);
     map.addControl(flowOverlay as unknown as maplibregl.IControl);
     let styleIndex = 0;
@@ -440,7 +451,6 @@ export default function AtlasMap({
         const traveler = samplePremierePath(measured, frame.progress);
         const partialPath = [...measured.points.slice(0, traveler.segmentIndex + 1), traveler.point];
         if (partialPath.length < 2) partialPath.push(traveler.point);
-        const positionTransition = { getPosition: { duration: Math.max(34, Math.min(110, 95 / Math.sqrt(Math.max(0.1, premiere.playbackSpeed)))), easing: (value: number) => 1 - Math.pow(1 - value, 3) } };
         const aurora = seasonAurora(premiere.showSeason ? frame.rideMeta?.season : undefined);
         const recoveryScore = premiere.showRecovery ? frame.rideMeta?.recoveryScore : null;
         const recoveryColor: [number, number, number, number] = recoveryScore === null || recoveryScore === undefined
@@ -490,7 +500,6 @@ export default function AtlasMap({
             stroked: true,
             getLineColor: [recoveryColor[0], recoveryColor[1], recoveryColor[2], 120],
             lineWidthMinPixels: 1,
-            transitions: positionTransition,
             parameters: { depthWriteEnabled: false },
           }),
           new ScatterplotLayer({
@@ -503,7 +512,6 @@ export default function AtlasMap({
             stroked: true,
             getLineColor: [184, 167, 255, 125],
             lineWidthMinPixels: 1,
-            transitions: positionTransition,
             parameters: { depthWriteEnabled: false },
           }),
           new ScatterplotLayer({
@@ -516,7 +524,6 @@ export default function AtlasMap({
             stroked: true,
             getLineColor: aurora,
             lineWidthMinPixels: 3,
-            transitions: positionTransition,
             parameters: { depthWriteEnabled: false },
           }),
           new ScatterplotLayer({
