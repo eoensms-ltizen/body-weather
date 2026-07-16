@@ -7,7 +7,7 @@ import { MapboxOverlay } from "@deck.gl/mapbox";
 import maplibregl, { type StyleSpecification } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { mergeBounds, routePointsForZoom, routesInBounds } from "@/lib/atlas";
-import { greatCircleArcPoint, smoothPremiereBearing } from "@/lib/premiere-camera";
+import { greatCircleArcPoint, premiereMontageCameraRouteIds, smoothPremiereBearing } from "@/lib/premiere-camera";
 import type { PremiereMapState, PremiereSeason } from "@/lib/premiere";
 import type { Achievement, AtlasRouteFeature, PlaceCluster, RouteBounds } from "@/lib/types";
 
@@ -149,6 +149,8 @@ export default function AtlasMap({
   const premiereRef = useRef(premiere);
   const routesRef = useRef(routes);
   const lastPremiereCameraRef = useRef(0);
+  const lastPremiereMontageCameraRef = useRef(0);
+  const lastPremiereMontageCountRef = useRef(-1);
   const smoothedPremiereBearingRef = useRef(0);
   const lastPremiereBearingRouteRef = useRef<string | null>(null);
   const wasPremiereActiveRef = useRef(false);
@@ -733,6 +735,47 @@ export default function AtlasMap({
 
   useEffect(() => {
     const map = mapRef.current;
+    if (!map || !premiereActive || premiereKind !== "montage" || premiereFreeLook) return;
+    const revealedRouteIds = premiereMontageCameraRouteIds(premiereOrderedIds ?? [], premiereRevealedCount);
+    if (revealedRouteIds.length === 0 || lastPremiereMontageCountRef.current === revealedRouteIds.length) return;
+
+    const now = performance.now();
+    const speedScale = Math.sqrt(Math.max(0.1, premierePlaybackSpeed));
+    const cameraCadence = Math.max(90, 240 / speedScale);
+    if (!premiereReducedMotion && now - lastPremiereMontageCameraRef.current < cameraCadence && premiereProgress < 0.98) return;
+
+    const routeById = new Map(routes.map((route) => [route.id, route]));
+    const revealedRoutes = revealedRouteIds.flatMap((id) => {
+      const route = routeById.get(id);
+      return route ? [route] : [];
+    });
+    const revealedBounds = mergeBounds(revealedRoutes.map((route) => route.bounds));
+    if (!revealedBounds) return;
+
+    const compact = map.getContainer().clientWidth < 720;
+    const padding = compact
+      ? { top: 105, right: 34, bottom: 165, left: 34 }
+      : { top: 130, right: 110, bottom: 180, left: 110 };
+    const camera = map.cameraForBounds(
+      [[revealedBounds.west, revealedBounds.south], [revealedBounds.east, revealedBounds.north]],
+      { padding, bearing: 0 },
+    );
+    if (!camera) return;
+
+    lastPremiereMontageCameraRef.current = now;
+    lastPremiereMontageCountRef.current = revealedRouteIds.length;
+    map.easeTo({
+      center: camera.center,
+      zoom: Math.max(1.5, Math.min(10.5, camera.zoom ?? map.getZoom())),
+      bearing: 0,
+      pitch: compact ? 6 : 12,
+      duration: premiereReducedMotion ? 0 : Math.max(180, 560 / speedScale),
+      easing: (value) => 1 - Math.pow(1 - value, 3),
+    });
+  }, [premiereActive, premiereKind, premiereProgress, premierePlaybackSpeed, premiereFreeLook, premiereReducedMotion, premiereOrderedIds, premiereRevealedCount, routes]);
+
+  useEffect(() => {
+    const map = mapRef.current;
     if (!map || !premiereActive || premiereKind !== "ride" || !premiereRouteId || premiereFreeLook || premiereReducedMotion || premiereCameraMode === "overview" || !premiereCameraTuning) return;
     const now = performance.now();
     const elapsed = lastPremiereCameraRef.current ? now - lastPremiereCameraRef.current : 180;
@@ -774,6 +817,8 @@ export default function AtlasMap({
     if (wasPremiereActiveRef.current && !premiereActive && mapRef.current) fitMap(mapRef.current, bounds, true);
     if (!premiereActive) {
       lastPremiereCameraRef.current = 0;
+      lastPremiereMontageCameraRef.current = 0;
+      lastPremiereMontageCountRef.current = -1;
       lastPremiereBearingRouteRef.current = null;
       smoothedPremiereBearingRef.current = 0;
     }

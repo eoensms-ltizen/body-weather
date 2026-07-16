@@ -5,6 +5,7 @@ import {
   DEFAULT_PREMIERE_CAMERA_TUNING,
   greatCircleArcPoint,
   normalizePremiereCameraTuning,
+  premiereMontageCameraRouteIds,
   shortestBearingDelta,
   smoothPremiereBearing,
 } from "../lib/premiere-camera";
@@ -14,6 +15,14 @@ test("Premiere speed accepts custom values inside a safe 0.1x to 16x range", () 
   assert.equal(clampPremiereSpeed(1.35), 1.35);
   assert.equal(clampPremiereSpeed(99), 16);
   assert.equal(clampPremiereSpeed(Number.NaN), 1);
+});
+
+test("Montage camera keeps every route revealed so far in its framing set", () => {
+  const orderedRouteIds = ["morning", "river", "mountain", "night"];
+  assert.deepEqual(premiereMontageCameraRouteIds(orderedRouteIds, 3), ["morning", "river", "mountain"]);
+  assert.deepEqual(premiereMontageCameraRouteIds(orderedRouteIds, 99), orderedRouteIds);
+  assert.deepEqual(premiereMontageCameraRouteIds(orderedRouteIds, -1), []);
+  assert.deepEqual(orderedRouteIds, ["morning", "river", "mountain", "night"]);
 });
 
 test("Camera tuning keeps follow zoom inside a coherent min/max range", () => {

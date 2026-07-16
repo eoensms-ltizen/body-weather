@@ -38,12 +38,14 @@ Atlas Premiere는 Experience Atlas의 경로를 시간순으로 재구성해 오
 - `Activity 구간을 화면에 가득 맞춤`이 켜지면 활동 전체 Bounds를 카메라에 유지한다. 꺼지면 여행자 중심 Follow를 사용한다.
 - 기본·최소·최대 배율을 Camera Lab에서 재생 전과 재생 중 모두 변경할 수 있다. 모든 값은 지도 엔진의 안전 범위에서 정규화한다.
 - Memory Jump의 여행자와 잔상은 직선 보간이 아니라 화면에 표시된 Great-circle Arc의 경도·위도·고도를 그대로 따라간다.
+- Memory Montage는 지금까지 공개된 모든 경로의 누적 Bounds를 배속에 맞춘 간격으로 다시 계산한다. 빠르게 경로를 채우는 동안 카메라는 최대 10.5 Zoom까지 단계적으로 Zoom Out하며 새 경로가 화면 밖에서 나타나는 상황을 막는다. 고배속일수록 카메라 전환도 짧아지고, 다음 Activity Follow가 시작되면 선택한 추적 카메라로 자연스럽게 복귀한다. Free Look 중에는 자동 카메라를 덮어쓰지 않는다.
 - 기본 방향 Follow 값은 `55% 방향 반영`, `1.2초 완충`, `55°/s`, `65% 배속 보정`이며 실제 데이터 피드백으로 조정 가능하다.
 
 ## 검증 게이트
 
 - [x] Story engine 단위 테스트: 시간순 공개, 전체 경로 포함, 하이라이트 상한, Memory Jump 비경로성, Full Chronicle 전체 Follow, measured recovery, 빈 입력.
 - [x] Camera Lab 단위 테스트: Custom 배속 경계, Zoom 정규화, 최단 방향 회전, 최대 회전속도, 고배속 완충, Arc 고도 일치.
+- [x] Montage 카메라 단위 테스트: 공개된 경로 전체를 누적 Framing 대상으로 유지하고 입력 경계를 안전하게 제한.
 - [x] 정적 검사: ESLint 및 TypeScript.
 - [x] 프로덕션 빌드.
 - [x] 데스크톱 실브라우저: 설정, 재생, Activity Card, Memory Jump, Free Look/복귀, Finale, PNG 연결, 콘솔 오류 확인.

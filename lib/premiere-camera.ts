@@ -39,6 +39,11 @@ export function clampPremiereSpeed(speed: number): number {
   return clamp(finiteOr(speed, 1), 0.1, 16);
 }
 
+export function premiereMontageCameraRouteIds(orderedRouteIds: readonly string[], revealedCount: number): string[] {
+  const safeCount = clamp(Math.floor(finiteOr(revealedCount, 0)), 0, orderedRouteIds.length);
+  return orderedRouteIds.slice(0, safeCount);
+}
+
 export function normalizePremiereCameraTuning(tuning: PremiereCameraTuning): PremiereCameraTuning {
   const minimum = clamp(finiteOr(tuning.minZoom, DEFAULT_PREMIERE_CAMERA_TUNING.minZoom), 1.5, 17);
   const maximum = clamp(finiteOr(tuning.maxZoom, DEFAULT_PREMIERE_CAMERA_TUNING.maxZoom), minimum, 18);
