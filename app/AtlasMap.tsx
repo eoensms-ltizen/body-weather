@@ -7,9 +7,9 @@ import { MapboxOverlay } from "@deck.gl/mapbox";
 import maplibregl, { type StyleSpecification } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { mergeBounds, routePointsForZoom, routesInBounds } from "@/lib/atlas";
-import { greatCircleArcPoint, measurePremierePath, premiereMontageCameraRouteIds, samplePremierePath, smoothPremiereBearing, type PremiereMeasuredPath } from "@/lib/premiere-camera";
+import { greatCircleArcPoint, measurePremiereRoutePath, premiereMontageCameraRouteIds, samplePremierePath, smoothPremiereBearing, type PremiereMeasuredPath } from "@/lib/premiere-camera";
 import type { PremiereMapState, PremiereSeason } from "@/lib/premiere";
-import type { Achievement, AtlasRouteFeature, PlaceCluster, RouteBounds } from "@/lib/types";
+import type { Achievement, AtlasRouteFeature, PlaceCluster, RouteBounds, RoutePoint } from "@/lib/types";
 
 export type AtlasColorMode = "memory" | "sport" | "season" | "effort" | "heart" | "power" | "achievement";
 export type AtlasInteractionMode = "navigate" | "poster" | "hide";
@@ -83,7 +83,7 @@ function seasonAurora(season: PremiereSeason | undefined): [number, number, numb
 }
 
 type RoutePathLod = "low" | "medium" | "high";
-interface CachedRoutePath { points: [number, number][]; measured?: PremiereMeasuredPath | null; }
+interface CachedRoutePath { sourcePoints: RoutePoint[]; points: [number, number][]; measured?: PremiereMeasuredPath | null; }
 type RoutePathCache = Partial<Record<RoutePathLod, CachedRoutePath>>;
 interface RenderedAtlasRoute { route: AtlasRouteFeature; renderPath: [number, number][]; }
 
@@ -96,7 +96,8 @@ function cachedRoutePath(cache: WeakMap<AtlasRouteFeature, RoutePathCache>, rout
   const cached = cache.get(route) ?? {};
   const existing = cached[lod];
   if (existing) return existing;
-  const path = { points: routePointsForZoom(route, zoom).map((point) => [point.longitude, point.latitude] as [number, number]) };
+  const sourcePoints = routePointsForZoom(route, zoom);
+  const path = { sourcePoints, points: sourcePoints.map((point) => [point.longitude, point.latitude] as [number, number]) };
   cached[lod] = path;
   cache.set(route, cached);
   return path;
@@ -104,7 +105,7 @@ function cachedRoutePath(cache: WeakMap<AtlasRouteFeature, RoutePathCache>, rout
 
 function measuredRoutePath(cache: WeakMap<AtlasRouteFeature, RoutePathCache>, route: AtlasRouteFeature, zoom: number): PremiereMeasuredPath | null {
   const cached = cachedRoutePath(cache, route, zoom);
-  if (cached.measured === undefined) cached.measured = measurePremierePath(cached.points);
+  if (cached.measured === undefined) cached.measured = measurePremiereRoutePath(cached.sourcePoints);
   return cached.measured;
 }
 
@@ -338,7 +339,7 @@ export default function AtlasMap({
       const cached = cachedRoutePath(routePathCacheRef.current, route, zoom);
       return cached.points.length >= 2 ? [{ route, renderPath: cached.points }] : [];
     });
-    const activeId = premiereActive ? premiereRouteId : selectedId;
+    const activeId = premiereActive ? undefined : selectedId;
     const colors = (item: RenderedAtlasRoute) => routeColor(item.route, colorMode, achievementIds, hiddenIds.has(item.route.id));
     const halo = new PathLayer({
       id: "atlas-route-halo",
@@ -448,31 +449,56 @@ export default function AtlasMap({
           overlay.setProps({ layers: [] });
           return;
         }
-        const traveler = samplePremierePath(measured, frame.progress);
+        const travelProgress = frame.travelProgress;
+        const imprintProgress = frame.imprintProgress;
+        const traveler = samplePremierePath(measured, travelProgress);
         const partialPath = [...measured.points.slice(0, traveler.segmentIndex + 1), traveler.point];
         if (partialPath.length < 2) partialPath.push(traveler.point);
+        const hotStart = samplePremierePath(measured, Math.max(0, travelProgress - 0.035));
+        const hotPath = [
+          hotStart.point,
+          ...measured.points.slice(hotStart.segmentIndex + 1, traveler.segmentIndex + 1),
+          traveler.point,
+        ];
+        if (hotPath.length < 2) hotPath.push(traveler.point);
         const aurora = seasonAurora(premiere.showSeason ? frame.rideMeta?.season : undefined);
         const recoveryScore = premiere.showRecovery ? frame.rideMeta?.recoveryScore : null;
+        const sealFade = Math.max(0, 1 - imprintProgress);
+        const auxFade = Math.max(0, 1 - imprintProgress * 1.35);
+        const flashPrimary = imprintProgress > 0 ? Math.sin(Math.PI * Math.min(1, imprintProgress / 0.5)) : 0;
+        const flashSecondary = imprintProgress > 0.36 ? Math.sin(Math.PI * Math.min(1, (imprintProgress - 0.36) / 0.5)) * 0.68 : 0;
+        const flash = Math.max(0, flashPrimary, flashSecondary);
+        const sealStrength = frame.rideMeta?.achievementId ? 1.25 : frame.rideMeta?.firstVisit ? 1.12 : 1;
+        const drawAlpha = Math.round(255 * sealFade);
+        const sealAlpha = Math.min(255, Math.round((80 + flash * 165) * Math.max(0, 1 - imprintProgress * 0.45) * sealStrength));
+        const travelerAlpha = Math.round(255 * Math.max(0, 1 - imprintProgress * 1.08));
+        const travelerRadius = 9 + flash * 14 + imprintProgress * 18;
         const recoveryColor: [number, number, number, number] = recoveryScore === null || recoveryScore === undefined
           ? [94, 235, 213, 45]
           : recoveryScore >= 70 ? [102, 245, 177, 72] : recoveryScore >= 45 ? [255, 205, 92, 72] : [255, 104, 145, 72];
+        const recoveryColorFaded: [number, number, number, number] = [recoveryColor[0], recoveryColor[1], recoveryColor[2], Math.round(recoveryColor[3] * auxFade)];
         const echoPositions = (frame.rideMeta?.echoRouteIds ?? []).flatMap((id, echoIndex) => {
           const route = routeById.get(id);
           if (!route) return [];
           const echoPath = measuredRoutePath(routePathCacheRef.current, route, Math.max(zoom, 9));
           if (!echoPath) return [];
-          return [{ position: samplePremierePath(echoPath, frame.progress).point, echoIndex }];
+          return [{ position: samplePremierePath(echoPath, travelProgress).point, echoIndex }];
         });
         const achievement = frame.rideMeta?.achievementId ? achievementById.get(frame.rideMeta.achievementId) : undefined;
         const recordPosition = achievement?.coordinate ?? activeRoute.centroid;
-        const showRecord = Boolean(premiere.showRecords && achievement && frame.progress >= 0.55);
-        const showTerritory = Boolean(frame.rideMeta?.firstVisit && frame.progress <= 0.42);
+        const showRecord = Boolean(premiere.showRecords && achievement && travelProgress >= 0.55 && auxFade > 0.08);
+        const showTerritory = Boolean(frame.rideMeta?.firstVisit && travelProgress <= 0.42 && imprintProgress === 0);
+        const partialData = travelProgress > 0 && drawAlpha > 4 ? [{ path: partialPath }] : [];
+        const hotData = travelProgress > 0 && travelProgress < 1 && imprintProgress === 0 ? [{ path: hotPath }] : [];
+        const sealData = imprintProgress > 0 ? [{ path: measured.points }] : [];
+        const sealWaveData = imprintProgress > 0 ? [{ position: traveler.point }] : [];
+        const sealedLabelData = imprintProgress > 0.18 && imprintProgress < 0.86 ? [{ position: traveler.point, text: "ACTIVITY SEALED" }] : [];
         overlay.setProps({ layers: [
           new PathLayer({
             id: "premiere-active-halo",
-            data: [{ path: partialPath }],
+            data: partialData,
             getPath: (item) => item.path,
-            getColor: [aurora[0], aurora[1], aurora[2], 72],
+            getColor: [aurora[0], aurora[1], aurora[2], Math.round(72 * sealFade)],
             getWidth: 22,
             widthUnits: "pixels",
             capRounded: true,
@@ -481,10 +507,43 @@ export default function AtlasMap({
           }),
           new PathLayer({
             id: "premiere-active-core",
-            data: [{ path: partialPath }],
+            data: partialData,
             getPath: (item) => item.path,
-            getColor: aurora,
+            getColor: [aurora[0], aurora[1], aurora[2], drawAlpha],
             getWidth: 4.2,
+            widthUnits: "pixels",
+            capRounded: true,
+            jointRounded: true,
+            parameters: { depthWriteEnabled: false },
+          }),
+          new PathLayer({
+            id: "premiere-active-hot-trail",
+            data: hotData,
+            getPath: (item) => item.path,
+            getColor: [246, 255, 252, 238],
+            getWidth: 2.8,
+            widthUnits: "pixels",
+            capRounded: true,
+            jointRounded: true,
+            parameters: { depthWriteEnabled: false },
+          }),
+          new PathLayer({
+            id: "premiere-seal-bloom",
+            data: sealData,
+            getPath: (item) => item.path,
+            getColor: [aurora[0], aurora[1], aurora[2], sealAlpha],
+            getWidth: 30 + flash * 76 * sealStrength,
+            widthUnits: "pixels",
+            capRounded: true,
+            jointRounded: true,
+            parameters: { depthWriteEnabled: false },
+          }),
+          new PathLayer({
+            id: "premiere-seal-core",
+            data: sealData,
+            getPath: (item) => item.path,
+            getColor: [252, 255, 247, Math.min(255, Math.round((80 + flash * 175) * sealFade))],
+            getWidth: 4 + flash * 9,
             widthUnits: "pixels",
             capRounded: true,
             jointRounded: true,
@@ -492,47 +551,71 @@ export default function AtlasMap({
           }),
           new ScatterplotLayer({
             id: "premiere-recovery-aura",
-            data: [{ position: traveler.point }],
+            data: auxFade > 0.05 ? [{ position: traveler.point }] : [],
             getPosition: (item) => item.position,
             getRadius: recoveryScore === null || recoveryScore === undefined ? 25 : 32 + recoveryScore * 0.45,
             radiusUnits: "pixels",
-            getFillColor: recoveryColor,
+            getFillColor: recoveryColorFaded,
             stroked: true,
-            getLineColor: [recoveryColor[0], recoveryColor[1], recoveryColor[2], 120],
+            getLineColor: [recoveryColor[0], recoveryColor[1], recoveryColor[2], Math.round(120 * auxFade)],
             lineWidthMinPixels: 1,
             parameters: { depthWriteEnabled: false },
           }),
           new ScatterplotLayer({
             id: "premiere-echo-travelers",
-            data: echoPositions,
+            data: auxFade > 0.05 ? echoPositions : [],
             getPosition: (item) => item.position,
             getRadius: (item) => Math.max(3, 6 - item.echoIndex * 0.5),
             radiusUnits: "pixels",
-            getFillColor: (item) => [145, 125, 255, Math.max(42, 135 - item.echoIndex * 18)],
+            getFillColor: (item) => [145, 125, 255, Math.round(Math.max(42, 135 - item.echoIndex * 18) * auxFade)],
             stroked: true,
-            getLineColor: [184, 167, 255, 125],
+            getLineColor: [184, 167, 255, Math.round(125 * auxFade)],
             lineWidthMinPixels: 1,
             parameters: { depthWriteEnabled: false },
           }),
           new ScatterplotLayer({
             id: "premiere-traveler",
-            data: [{ position: traveler.point }],
+            data: travelerAlpha > 6 ? [{ position: traveler.point }] : [],
             getPosition: (item) => item.position,
-            getRadius: 9,
+            getRadius: travelerRadius,
             radiusUnits: "pixels",
-            getFillColor: [246, 255, 252, 255],
+            getFillColor: [246, 255, 252, travelerAlpha],
             stroked: true,
-            getLineColor: aurora,
+            getLineColor: [aurora[0], aurora[1], aurora[2], travelerAlpha],
             lineWidthMinPixels: 3,
             parameters: { depthWriteEnabled: false },
+          }),
+          new ScatterplotLayer({
+            id: "premiere-seal-wave",
+            data: sealWaveData,
+            getPosition: (item) => item.position,
+            getRadius: 38 + imprintProgress * 215 + flash * 42,
+            radiusUnits: "pixels",
+            getFillColor: [aurora[0], aurora[1], aurora[2], Math.round(48 * sealFade)],
+            stroked: true,
+            getLineColor: achievement?.evidence === "source-confirmed" ? [255, 224, 122, Math.round(235 * sealFade)] : [aurora[0], aurora[1], aurora[2], Math.round(220 * sealFade)],
+            lineWidthMinPixels: 2,
+            parameters: { depthWriteEnabled: false },
+          }),
+          new TextLayer({
+            id: "premiere-seal-label",
+            data: sealedLabelData,
+            getPosition: (item) => item.position,
+            getText: (item) => item.text,
+            getSize: 14 + flash * 4,
+            getColor: [238, 255, 249, Math.round(240 * sealFade)],
+            getPixelOffset: [0, -42],
+            getTextAnchor: "middle",
+            getAlignmentBaseline: "bottom",
+            fontFamily: "Arial, sans-serif",
           }),
           new ScatterplotLayer({
             id: "premiere-territory-bloom",
             data: showTerritory ? [{ position: activeRoute.centroid }] : [],
             getPosition: (item) => item.position,
-            getRadius: 34 + frame.progress * 120,
+            getRadius: 34 + travelProgress * 120,
             radiusUnits: "pixels",
-            getFillColor: [105, 244, 181, Math.round(65 * (1 - frame.progress))],
+            getFillColor: [105, 244, 181, Math.round(65 * (1 - travelProgress))],
             stroked: true,
             getLineColor: [128, 255, 198, 175],
             lineWidthMinPixels: 1,
@@ -554,11 +637,11 @@ export default function AtlasMap({
             id: "premiere-record-beacon",
             data: showRecord ? [{ position: recordPosition }] : [],
             getPosition: (item) => item.position,
-            getRadius: 24 + Math.sin(frame.progress * Math.PI * 8) * 4,
+            getRadius: 24 + Math.sin(travelProgress * Math.PI * 8) * 4,
             radiusUnits: "pixels",
-            getFillColor: [255, 202, 78, 50],
+            getFillColor: [255, 202, 78, Math.round(50 * auxFade)],
             stroked: true,
-            getLineColor: [255, 224, 132, 225],
+            getLineColor: [255, 224, 132, Math.round(225 * auxFade)],
             lineWidthMinPixels: 2,
             parameters: { depthWriteEnabled: false },
           }),
@@ -714,12 +797,17 @@ export default function AtlasMap({
   const premiereFromRouteId = premiere?.frame.fromRouteId;
   const premiereToRouteId = premiere?.frame.toRouteId;
   const premiereProgress = premiere?.frame.progress ?? 0;
+  const premiereTravelProgress = premiere?.frame.travelProgress ?? 0;
+  const premiereImprintProgress = premiere?.frame.imprintProgress ?? 0;
   const premiereCameraMode = premiere?.cameraMode;
   const premiereFreeLook = premiere?.freeLook ?? false;
   const premiereReducedMotion = premiere?.reducedMotion ?? false;
   const premierePlaybackSpeed = premiere?.playbackSpeed ?? 1;
   const premiereCameraTuning = premiere?.cameraTuning;
   const premiereSeason = premiere?.frame.rideMeta?.season;
+  const premiereBurnFlashOpacity = !premiereReducedMotion && premiereKind === "ride" && premiereImprintProgress > 0
+    ? Math.min(0.92, Math.max(0, Math.sin(Math.PI * Math.min(1, premiereImprintProgress / 0.5))) * Math.max(0, 1 - premiereImprintProgress * 0.18))
+    : 0;
 
   useEffect(() => {
     const map = mapRef.current;
@@ -830,12 +918,12 @@ export default function AtlasMap({
     if (!route) return;
     const measured = measuredRoutePath(routePathCacheRef.current, route, Math.max(zoom, 9));
     if (!measured) return;
-    const traveler = samplePremierePath(measured, premiereProgress);
-    const leadProgress = Math.min(1, premiereProgress + 0.025);
+    const traveler = samplePremierePath(measured, premiereTravelProgress);
+    const leadProgress = Math.min(1, premiereTravelProgress + 0.025);
     const lead = samplePremierePath(measured, leadProgress);
-    const bearingOrigin = leadProgress > premiereProgress
+    const bearingOrigin = leadProgress > premiereTravelProgress
       ? traveler.point
-      : samplePremierePath(measured, Math.max(0, premiereProgress - 0.025)).point;
+      : samplePremierePath(measured, Math.max(0, premiereTravelProgress - 0.025)).point;
     if (lastPremiereBearingRouteRef.current !== premiereRouteId) {
       lastPremiereBearingRouteRef.current = premiereRouteId;
       smoothedPremiereBearingRef.current = map.getBearing();
@@ -860,7 +948,7 @@ export default function AtlasMap({
       duration: 360,
       easing: (value) => 1 - Math.pow(1 - value, 3),
     });
-  }, [premiereActive, premiereKind, premiereRouteId, premiereProgress, premiereCameraMode, premiereCameraTuning, premierePlaybackSpeed, premiereFreeLook, premiereReducedMotion, routeById, zoom]);
+  }, [premiereActive, premiereKind, premiereRouteId, premiereTravelProgress, premiereCameraMode, premiereCameraTuning, premierePlaybackSpeed, premiereFreeLook, premiereReducedMotion, routeById, zoom]);
 
   useEffect(() => {
     if (wasPremiereActiveRef.current && !premiereActive && mapRef.current) fitMap(mapRef.current, bounds, true);
@@ -916,6 +1004,7 @@ export default function AtlasMap({
     {mapState === "backup" && <div className="map-provider-note">보조 지도에 연결했습니다.</div>}
     {mapState === "fallback" && <div className="map-fallback-note">지도 공급자 연결이 모두 지연되어 경로만 표시하고 있습니다. 네트워크가 회복되면 새로고침해 주세요.</div>}
     <div className="map-atmosphere" aria-hidden="true" />
+    <div className="premiere-burn-flash" aria-hidden="true" style={{ opacity: premiereBurnFlashOpacity }} />
     {!premiereActive && interactionMode !== "navigate" && <div className={`map-selection-surface mode-${interactionMode}`} data-testid="map-selection-surface" aria-label={interactionMode === "poster" ? "포스터 영역 드래그 선택" : "숨길 활동 영역 드래그 선택"} onPointerDown={startSelection} onPointerMove={moveSelection} onPointerUp={endSelection} onPointerCancel={() => setDragBox(null)}>{dragBox && <i className="map-selection-box" style={boxStyle} />}</div>}
   </div>;
 }

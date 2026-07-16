@@ -5,6 +5,7 @@ import {
   DEFAULT_PREMIERE_CAMERA_TUNING,
   greatCircleArcPoint,
   measurePremierePath,
+  measurePremiereRoutePath,
   normalizePremiereCameraTuning,
   premiereMontageCameraRouteIds,
   samplePremierePath,
@@ -25,6 +26,32 @@ test("Montage camera keeps every route revealed so far in its framing set", () =
   assert.deepEqual(premiereMontageCameraRouteIds(orderedRouteIds, 99), orderedRouteIds);
   assert.deepEqual(premiereMontageCameraRouteIds(orderedRouteIds, -1), []);
   assert.deepEqual(orderedRouteIds, ["morning", "river", "mountain", "night"]);
+});
+
+test("Recorded Pace uses GPS timestamps instead of constant spatial speed", () => {
+  const measured = measurePremiereRoutePath([
+    { longitude: 127, latitude: 37, timestamp: "2026-07-01T00:00:00Z" },
+    { longitude: 127.001, latitude: 37, timestamp: "2026-07-01T00:00:10Z" },
+    { longitude: 127.002, latitude: 37, timestamp: "2026-07-01T00:01:40Z" },
+  ]);
+  assert.ok(measured);
+  assert.equal(measured.paceMode, "recorded");
+  const half = samplePremierePath(measured, 0.5);
+  assert.equal(half.segmentIndex, 1);
+  assert.ok(half.point[0] > 127.001 && half.point[0] < 127.002);
+});
+
+test("Sensor Pace falls back to per-point speed when timestamps are unavailable", () => {
+  const measured = measurePremiereRoutePath([
+    { longitude: 127, latitude: 37, speed: 12 },
+    { longitude: 127.001, latitude: 37, speed: 12 },
+    { longitude: 127.002, latitude: 37, speed: 2 },
+  ]);
+  assert.ok(measured);
+  assert.equal(measured.paceMode, "sensor");
+  const half = samplePremierePath(measured, 0.5);
+  assert.equal(half.segmentIndex, 1);
+  assert.ok(half.point[0] > 127.001 && half.point[0] < 127.002);
 });
 
 test("Traveler advances by route distance and interpolates inside sparse segments", () => {

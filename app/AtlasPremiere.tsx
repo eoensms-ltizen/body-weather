@@ -240,13 +240,14 @@ export default function AtlasPremiere({
 
   const totalDistance = routes.reduce((sum, route) => sum + (route.activity.distance.value ?? 0), 0);
   const totalHours = routes.reduce((sum, route) => sum + (route.activity.movingTime.value ?? 0), 0) / 3600;
-  const sceneLabel = frame?.kind === "jump" ? frame.jumpKind === "long-gap" ? "TIME GAP" : "MEMORY JUMP" : frame?.kind === "montage" ? "MEMORY MONTAGE" : frame?.kind === "finale" ? "ATLAS COMPLETE" : frame?.kind === "prelude" ? "FIRST LIGHT" : "FOLLOWING A MEMORY";
+  const sceneLabel = frame?.kind === "jump" ? frame.jumpKind === "long-gap" ? "TIME GAP" : "MEMORY JUMP" : frame?.kind === "montage" ? "MEMORY MONTAGE" : frame?.kind === "finale" ? "ATLAS COMPLETE" : frame?.kind === "prelude" ? "FIRST LIGHT" : frame?.kind === "ride" && frame.imprintProgress > 0 ? "AURORA BURN-IN" : "FOLLOWING A MEMORY";
+  const paceLabel = frame?.rideMeta?.paceMode === "recorded" ? "RECORDED PACE" : frame?.rideMeta?.paceMode === "sensor" ? "SENSOR PACE" : "VISUALIZED PACE";
   const finaleVisible = status === "complete" || frame?.kind === "finale";
 
   return <section className={`premiere-hud status-${finaleVisible ? "complete" : status}`} aria-label="Atlas Premiere 재생기">
     <header><span>{sceneLabel}</span><b>{activeRoute?.activity.localDate ?? (frame?.kind === "finale" ? story?.endDate : story?.startDate)}</b><button type="button" onClick={exit} aria-label="Premiere 종료">×</button></header>
     {showActivityCard && activeRoute && <article className="premiere-activity-card">
-      <p>{frame?.rideMeta?.timestampMode === "recorded" ? "RECORDED TIME" : "VISUALIZED PROGRESS"}</p>
+      <p>{paceLabel}</p>
       <h2>{activeRoute.activity.name}</h2>
       <div>{[activeRoute.activity.type, metric(activeRoute.activity.distance.value, " km", 1), metric(activeRoute.activity.movingTime.value === null ? null : activeRoute.activity.movingTime.value / 3600, " h", 1), metric(activeRoute.activity.elevationGain?.value, " m")].filter(Boolean).map((item) => <span key={item}>{item}</span>)}</div>
       {showSeason && frame?.rideMeta && <small>{frame.rideMeta.season.toUpperCase()} SEASON</small>}

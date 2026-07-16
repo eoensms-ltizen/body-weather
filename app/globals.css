@@ -457,6 +457,8 @@ button, summary { -webkit-tap-highlight-color: transparent; }
 .atlas-map-wrap.premiere-active .atlas-map canvas { filter: saturate(.95) brightness(.78) contrast(1.15); }
 .atlas-map-wrap.premiere-active .map-atmosphere { background: radial-gradient(circle at 50% 45%, transparent 13%, rgba(1,8,14,.18) 58%, rgba(1,5,10,.88) 100%); }
 .atlas-map-wrap.premiere-active .map-atmosphere::before { opacity: .74; filter: blur(58px); animation-duration: 9s; }
+.premiere-burn-flash { position: absolute; z-index: 2; inset: 0; pointer-events: none; background: radial-gradient(circle at 50% 50%, rgba(252,255,247,.82) 0 5%, rgba(114,244,214,.46) 13%, rgba(149,124,255,.18) 28%, transparent 57%), linear-gradient(90deg, transparent, rgba(112,244,213,.28), rgba(255,226,132,.26), transparent); mix-blend-mode: screen; opacity: 0; will-change: opacity; }
+@media (prefers-reduced-motion: reduce) { .premiere-burn-flash { display: none; } }
 .atlas-map-wrap.premiere-spring .map-atmosphere::before { background: linear-gradient(90deg, transparent, rgba(95,242,157,.48), rgba(112,244,213,.28), rgba(182,146,255,.2), transparent); }
 .atlas-map-wrap.premiere-summer .map-atmosphere::before { background: linear-gradient(90deg, transparent, rgba(255,191,69,.4), rgba(112,244,213,.27), rgba(97,218,162,.28), transparent); }
 .atlas-map-wrap.premiere-autumn .map-atmosphere::before { background: linear-gradient(90deg, transparent, rgba(255,105,145,.42), rgba(255,184,88,.28), rgba(149,124,255,.27), transparent); }

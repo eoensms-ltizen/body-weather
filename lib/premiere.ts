@@ -1,5 +1,5 @@
 import type { Achievement, AtlasRouteFeature, DailyWellness, PlaceCluster } from "./types";
-import type { PremiereCameraTuning } from "./premiere-camera";
+import { measurePremiereRoutePath, type PremiereCameraTuning, type PremierePaceMode } from "./premiere-camera";
 
 export type PremiereLength = "memory-cut" | "three-minute" | "full-chronicle";
 export type PremiereCameraMode = "position" | "direction" | "overview";
@@ -23,7 +23,7 @@ export interface PremiereRideMeta {
   achievementId: string | null;
   achievementEvidence: Achievement["evidence"] | null;
   echoRouteIds: string[];
-  timestampMode: "recorded" | "visualized";
+  paceMode: PremierePaceMode;
 }
 
 export interface PremiereScene {
@@ -59,6 +59,8 @@ export interface PremiereFrame {
   sceneId: string;
   kind: PremiereSceneKind;
   progress: number;
+  travelProgress: number;
+  imprintProgress: number;
   revealedCount: number;
   routeId?: string;
   fromRouteId?: string;
@@ -85,6 +87,8 @@ export interface PremiereMapState {
 type DraftScene = Omit<PremiereScene, "startMs" | "endMs">;
 
 const DAY_MS = 86_400_000;
+export const PREMIERE_RIDE_TRAVEL_SHARE = 0.82;
+const PREMIERE_IMPRINT_REVEAL_AT = 0.62;
 
 function clamp(value: number, low: number, high: number): number {
   return Math.max(low, Math.min(high, value));
@@ -134,9 +138,8 @@ function clusterForRoute(routeId: string, clusters: PlaceCluster[]): PlaceCluste
   return clusters.find((cluster) => cluster.activityIds.includes(routeId));
 }
 
-function timestampMode(route: AtlasRouteFeature): PremiereRideMeta["timestampMode"] {
-  const timestamps = route.lod.medium.filter((point) => point.timestamp).length;
-  return timestamps >= 2 ? "recorded" : "visualized";
+function paceMode(route: AtlasRouteFeature): PremierePaceMode {
+  return measurePremiereRoutePath(route.lod.medium)?.paceMode ?? "distance";
 }
 
 function rideMeta(
@@ -159,8 +162,20 @@ function rideMeta(
     achievementId: achievement?.id ?? null,
     achievementEvidence: achievement?.evidence ?? null,
     echoRouteIds,
-    timestampMode: timestampMode(route),
+    paceMode: paceMode(route),
   };
+}
+
+function rideSceneDuration(route: AtlasRouteFeature, meta: PremiereRideMeta, first: boolean): number {
+  const movingSeconds = route.activity.movingTime.value ?? route.activity.elapsedTime.value ?? 0;
+  const movingHours = Math.max(0, movingSeconds / 3_600);
+  const distanceKm = Math.max(0, route.activity.distance.value ?? 0);
+  const duration = 6_500
+    + Math.log1p(movingHours) * 2_300
+    + Math.log1p(distanceKm / 20) * 900
+    + (meta.achievementId ? 900 : 0)
+    + (first ? 700 : 0);
+  return Math.round(clamp(duration, 6_500, 15_000));
 }
 
 function topIds(routes: AtlasRouteFeature[], accessor: (route: AtlasRouteFeature) => number | null, count: number): Set<string> {
@@ -262,7 +277,7 @@ function memoryDrafts(
     drafts.push({
       id: `ride-${route.id}`,
       kind: "ride",
-      durationMs: highlightIndex === 0 ? 6_500 : meta.achievementId ? 5_500 : 4_300,
+      durationMs: rideSceneDuration(route, meta, highlightIndex === 0),
       revealStart: revealCursor,
       revealEnd: revealCursor + 1,
       routeId: route.id,
@@ -288,7 +303,8 @@ function fullDrafts(
   const drafts: DraftScene[] = [{ id: "prelude", kind: "prelude", durationMs: 3_000, revealStart: 0, revealEnd: 0 }];
   routes.forEach((route, index) => {
     if (index > 0) drafts.push(jumpScene(routes[index - 1], route, index, index));
-    drafts.push({ id: `ride-${route.id}`, kind: "ride", durationMs: 5_000, revealStart: index, revealEnd: index + 1, routeId: route.id, rideMeta: rideMeta(route, routes, achievementsByActivity, clusters, wellnessByDate) });
+    const meta = rideMeta(route, routes, achievementsByActivity, clusters, wellnessByDate);
+    drafts.push({ id: `ride-${route.id}`, kind: "ride", durationMs: rideSceneDuration(route, meta, index === 0), revealStart: index, revealEnd: index + 1, routeId: route.id, rideMeta: meta });
   });
   drafts.push({ id: "finale", kind: "finale", durationMs: 6_000, revealStart: routes.length, revealEnd: routes.length });
   return drafts;
@@ -306,7 +322,7 @@ export function buildPremiereStory(
   const achievementsByActivity = new Map<string, Achievement[]>();
   achievements.forEach((achievement) => achievementsByActivity.set(achievement.activityId, [...(achievementsByActivity.get(achievement.activityId) ?? []), achievement]));
   const wellnessByDate = new Map(wellness.map((day) => [day.date, day]));
-  const highlightLimit = settings.length === "memory-cut" ? 12 : settings.length === "three-minute" ? 36 : ordered.length;
+  const highlightLimit = settings.length === "memory-cut" ? 8 : settings.length === "three-minute" ? 22 : ordered.length;
   const highlights = highlightIds(ordered, achievements, clusters, highlightLimit);
   const drafts = settings.length === "full-chronicle"
     ? fullDrafts(ordered, achievementsByActivity, clusters, wellnessByDate)
@@ -334,16 +350,22 @@ export function premiereFrameAt(story: PremiereStory, playheadMs: number): Premi
   }
   const scene = story.scenes[low];
   const progress = scene.durationMs > 0 ? clamp((time - scene.startMs) / scene.durationMs, 0, 1) : 1;
+  const travelProgress = scene.kind === "ride" ? clamp(progress / PREMIERE_RIDE_TRAVEL_SHARE, 0, 1) : progress;
+  const imprintProgress = scene.kind === "ride"
+    ? clamp((progress - PREMIERE_RIDE_TRAVEL_SHARE) / (1 - PREMIERE_RIDE_TRAVEL_SHARE), 0, 1)
+    : 0;
   const revealedCount = scene.kind === "montage"
     ? Math.round(scene.revealStart + (scene.revealEnd - scene.revealStart) * progress)
-    : scene.kind === "ride" && progress < 0.04
-      ? scene.revealStart
+    : scene.kind === "ride"
+      ? imprintProgress >= PREMIERE_IMPRINT_REVEAL_AT ? scene.revealEnd : scene.revealStart
       : scene.revealEnd;
   return {
     sceneIndex: low,
     sceneId: scene.id,
     kind: scene.kind,
     progress,
+    travelProgress,
+    imprintProgress,
     revealedCount,
     routeId: scene.routeId,
     fromRouteId: scene.fromRouteId,
